@@ -1,0 +1,6 @@
+PUT route (Express), on router mounted at /api/pickup-entry:
+
+router.put(
+  '/update-corporate-tax-invoice-preview-approval',
+  pickupEntryController.updateCorporateTaxInvoicePreviewApproval
+);

@@ -1,0 +1,1713 @@
+﻿diff --git a/src/components/printables/RetailInvoice.jsx b/src/components/printables/RetailInvoice.jsx
+index 08ca21b..10a42e4 100644
+--- a/src/components/printables/RetailInvoice.jsx
++++ b/src/components/printables/RetailInvoice.jsx
+@@ -29,37 +29,35 @@ const RetailInvoice = React.forwardRef(({ data, itemTypes, order, serviceItemsSu
+     };
+ 
+     const orderItems = order?.items && Array.isArray(order.items) ? order.items : [];
+-    // Group same items (by type, color, brand, etc.) so each item shows once; use quantity from first occurrence (do not sum)
+-    const formattedItems = Object.values(
+-        orderItems.reduce((acc, item) => {
+-            const key = `${item.item_type_id}|${item.remark}|${item.color}|${item.brand}|${item.packing_option}|${item.price}|${item.service_type_id}`;
+-            const qty = Number(item.quantity) ?? Number(item.qty) ?? 1;
++    // The backend expands items (e.g., quantity 3 becomes 3 rows), but all expanded rows for a single order-entry line share the same item_id!
++    // Group by item_id so we recover exactly the original rows the user added (e.g., 4 rows), instead of showing 7 rows.
++    const uniqueItemsById = [];
++    const seenItemIds = new Set();
++
++    orderItems.forEach((item) => {
++        // Fallback to a compound key only if item_id is missing
++        const idKey = item.item_id || `${item.item_type_id}|${item.remark}|${item.color}|${item.brand}|${item.packing_option}|${item.price}|${item.service_type_id}`;
++
++        if (!seenItemIds.has(idKey)) {
++            seenItemIds.add(idKey);
++            const qty = Number(item.quantity) || 1;
+             const isItemDamaged = item.is_damaged === 1 || item.is_damaged === true || Number(item.is_damaged) === 1 || item.isDamaged === true || Number(item.damaged) === 1;
+             const isReturned = item.is_returned === 1 || item.is_returned === true || Number(item.is_returned) === 1;
+-            // Use API returned_quantity when present. When only is_returned flag is set, count 1 physical item (not the whole qty).
+             const returnedQty = (item.returned_quantity != null && Number(item.returned_quantity) >= 0)
+                 ? Math.min(Number(item.returned_quantity), qty)
+                 : (isReturned ? 1 : 0);
+-            // Same approach for damaged: count 1 physical item per damaged row, not the whole group qty.
+             const damagedQty = isItemDamaged ? 1 : 0;
+ 
+-            if (!acc[key]) {
+-                acc[key] = {
+-                    ...item,
+-                    quantity: qty,
+-                    damaged_quantity: damagedQty,
+-                    returned_quantity: returnedQty
+-                };
+-            } else {
+-                // Each duplicate key row is a physical item ΓÇö accumulate qty, damaged, and returned counts.
+-                acc[key].quantity += qty;
+-                acc[key].damaged_quantity += damagedQty;
+-                acc[key].returned_quantity += returnedQty;
+-            }
++            uniqueItemsById.push({
++                ...item,
++                quantity: qty,
++                damaged_quantity: damagedQty,
++                returned_quantity: returnedQty,
++            });
++        }
++    });
+ 
+-            return acc;
+-        }, {})
+-    );
++    const formattedItems = uniqueItemsById;
+ 
+     const deliveryCharge = Number(data?.delivery_charge) || 0;
+     const fromServiceItems = serviceItemsSummary && typeof serviceItemsSummary.totalBeforeDeductions === "number";
+diff --git a/src/pages/retail/SalesRetailAttendanceTracking.jsx b/src/pages/retail/SalesRetailAttendanceTracking.jsx
+index a062b14..4980bf7 100644
+--- a/src/pages/retail/SalesRetailAttendanceTracking.jsx
++++ b/src/pages/retail/SalesRetailAttendanceTracking.jsx
+@@ -221,6 +221,14 @@ const SalesRetailAttendanceTracking = () => {
+             navigate("/sales/retail/dashboard");
+             return;
+         }
++        // Director: skip attendance, set branch 1 and isDayStarted true, go to dashboard
++        if (role === "director") {
++            localStorage.setItem("selectedBranchId", "1");
++            localStorage.setItem("selectedBranchName", "Branch 1");
++            localStorage.setItem("isDayStarted", "true");
++            navigate("/sales/retail/dashboard");
++            return;
++        }
+         // WIP users do not need to mark attendance; send them straight to Transfer Note
+         if (role.includes("wip")) {
+             navigate("/sales/retail/to-production");
+diff --git a/src/pages/retail/SalesRetailInvoice.jsx b/src/pages/retail/SalesRetailInvoice.jsx
+index 03a2bf1..b709ba5 100644
+--- a/src/pages/retail/SalesRetailInvoice.jsx
++++ b/src/pages/retail/SalesRetailInvoice.jsx
+@@ -126,7 +126,7 @@ const SalesRetailInvoice = () => {
+     const lastStableTotalPagesRef = useRef(1);
+     const lastStableWindowRef = useRef({ start: 1, end: 5 });
+     const lastPendingAllBranchesFetchRef = useRef({ page: 1, branch: null });
+-    
++
+     // Date change calendar state (superAdmin only)
+     const [showDateChangeCalendar, setShowDateChangeCalendar] = useState(false);
+     const [selectedOrderForDateChange, setSelectedOrderForDateChange] = useState(null);
+@@ -162,10 +162,10 @@ const SalesRetailInvoice = () => {
+             console.warn("extractPendingOrders: No response", response);
+             return [];
+         }
+-        
++
+         console.log("extractPendingOrders: Full response:", response);
+         console.log("extractPendingOrders: response.data:", response.data);
+-        
++
+         // Try multiple possible response structures
+         if (response.data) {
+             // First try: pending_invoice_orders array
+@@ -185,8 +185,8 @@ const SalesRetailInvoice = () => {
+             }
+             // Fourth try: pending_invoice_orders exists but might not be array
+             if (response.data.pending_invoice_orders) {
+-                const fallback = Array.isArray(response.data.pending_invoice_orders) 
+-                    ? response.data.pending_invoice_orders 
++                const fallback = Array.isArray(response.data.pending_invoice_orders)
++                    ? response.data.pending_invoice_orders
+                     : [];
+                 console.log("extractPendingOrders: Using pending_invoice_orders (non-array), count:", fallback.length);
+                 return fallback;
+@@ -199,19 +199,19 @@ const SalesRetailInvoice = () => {
+                 }
+             }
+         }
+-        
++
+         // Check if response itself is an array
+         if (Array.isArray(response)) {
+             console.log("extractPendingOrders: Response is array, count:", response.length);
+             return response;
+         }
+-        
++
+         // Check if response has orders at root level
+         if (Array.isArray(response.orders)) {
+             console.log("extractPendingOrders: Found orders at root, count:", response.orders.length);
+             return response.orders;
+         }
+-        
++
+         console.warn("extractPendingOrders: Could not extract orders from response structure");
+         console.warn("extractPendingOrders: Response keys:", Object.keys(response || {}));
+         console.warn("extractPendingOrders: Response.data keys:", response?.data ? Object.keys(response.data) : "no data");
+@@ -268,11 +268,11 @@ const SalesRetailInvoice = () => {
+                 }
+             } else {
+                 // Specific branch: call API with branch_id (use effectiveBranchFilter for correct branch when switching)
+-                const branchId = effectiveBranchFilter != null && String(effectiveBranchFilter).trim() !== "" 
+-                    ? Number(effectiveBranchFilter) 
++                const branchId = effectiveBranchFilter != null && String(effectiveBranchFilter).trim() !== ""
++                    ? Number(effectiveBranchFilter)
+                     : Number(localStorage.getItem("selectedBranchId")) || 1;
+                 currentLoadedPages = loadedPagesCount;
+-                
++
+                 if (!append) {
+                     // Initial load: fetch offset 0 (first 15 orders)
+                     const offset = 0;
+@@ -330,7 +330,7 @@ const SalesRetailInvoice = () => {
+             const filtered = allOrders;
+             console.log("fetchAllPendingInvoices: Before sorting, filtered orders count:", filtered.length);
+             console.log("fetchAllPendingInvoices: append mode:", append, "existing invoices count:", invoices.length);
+-            
++
+             const ordersToSort = append ? [...invoices, ...filtered] : filtered;
+             console.log("fetchAllPendingInvoices: ordersToSort count:", ordersToSort.length);
+ 
+@@ -360,7 +360,7 @@ const SalesRetailInvoice = () => {
+                 // Check if there are more orders to load
+                 // If we have totalOrdersCount, check if we've loaded less than the total
+                 // Otherwise, check if we got a full page (15 orders)
+-                const hasMore = currentTotal != null 
++                const hasMore = currentTotal != null
+                     ? (sorted.length < currentTotal)
+                     : (allOrders.length >= 15);
+                 console.log("fetchAllPendingInvoices: hasMore:", hasMore, "currentTotal:", currentTotal, "sorted.length:", sorted.length, "allOrders.length:", allOrders.length);
+@@ -419,12 +419,12 @@ const SalesRetailInvoice = () => {
+             let currentLoadedPages = loadedAlreadyInvoicedPagesCount;
+ 
+             // Determine branch_id: -1 for all branches, otherwise use effectiveBranchFilter
+-            const branchId = isAllBranches 
+-                ? -1 
+-                : (effectiveBranchFilter != null && String(effectiveBranchFilter).trim() !== "" 
+-                    ? Number(effectiveBranchFilter) 
++            const branchId = isAllBranches
++                ? -1
++                : (effectiveBranchFilter != null && String(effectiveBranchFilter).trim() !== ""
++                    ? Number(effectiveBranchFilter)
+                     : Number(localStorage.getItem("selectedBranchId")) || 1);
+-            
++
+             if (!append) {
+                 // Initial load: fetch offset 0 (first 15 orders)
+                 const requestOffset = 0;
+@@ -510,17 +510,17 @@ const SalesRetailInvoice = () => {
+                 const numB = parseInt(String(b?.order_id || "").replace("ORDER", ""), 10) || 0;
+                 return numB - numA;
+             });
+-            
++
+             setAlreadyInvoiced(sorted);
+-            
++
+             // Update offset and hasMore based on count from API
+             const currentTotal = totalAlreadyInvoicedCount;
+-            const hasMore = currentTotal != null 
++            const hasMore = currentTotal != null
+                 ? (sorted.length < currentTotal)
+                 : (allOrders.length >= INVOICED_ORDERS_PAGE_SIZE);
+             setAlreadyInvoicedHasMore(hasMore);
+             setAlreadyInvoicedOffset(currentLoadedPages);
+-            
++
+             return { added: sorted.length, nextOffset: alreadyInvoicedOffset };
+         } catch (error) {
+             console.error("Error fetching invoiced orders: ", error);
+@@ -561,22 +561,22 @@ const SalesRetailInvoice = () => {
+             const offset = append ? searchResultsOffset : 0;
+             // Use branchFilter: -1 for "All Branches", otherwise use the selected branch_id
+             const isAllBranches = !branchFilter || String(branchFilter).trim() === "";
+-            const searchBranchId = isAllBranches 
+-                ? -1 
+-                : (branchFilter != null && String(branchFilter).trim() !== "" 
+-                    ? Number(branchFilter) 
++            const searchBranchId = isAllBranches
++                ? -1
++                : (branchFilter != null && String(branchFilter).trim() !== ""
++                    ? Number(branchFilter)
+                     : Number(localStorage.getItem("selectedBranchId")) || 1);
+             const currentStatus = selectedTab === 1 ? "Pending Invoiced Order" : selectedTab === 2 ? "Already Invoiced Order" : undefined;
+             console.log("fetchSearchOrders: Calling searchOrderById with:", { userId, q, offset, searchBranchId, current_status: currentStatus });
+             const response = await searchOrderById(userId, q, offset, searchBranchId, 50, currentStatus);
+             console.log("fetchSearchOrders: Response received:", response);
+-            
++
+             if (!response || !response.data) {
+                 console.warn("fetchSearchOrders: No response or response.data");
+                 setSearchResults([]);
+                 return;
+             }
+-            
++
+             const raw = response.data;
+             console.log("fetchSearchOrders: Raw response data:", JSON.stringify(raw, null, 2));
+ 
+@@ -624,7 +624,7 @@ const SalesRetailInvoice = () => {
+             } else if (raw && typeof raw === "object" && !Array.isArray(raw) && (raw.order_id != null || raw.items != null)) {
+                 list = [raw];
+             }
+-            
++
+             console.log("fetchSearchOrders: Parsed list (after flattening):", list);
+             console.log("fetchSearchOrders: List length:", list.length);
+             const count = raw?.count ?? raw?.data?.count ?? list.length;
+@@ -633,27 +633,27 @@ const SalesRetailInvoice = () => {
+             const ordersWithFullDetails = await Promise.all(
+                 list.map(async (order) => {
+                     if (!order || typeof order !== "object") return null;
+-                    
++
+                     console.log("fetchSearchOrders: Processing order from search:", order);
+-                    
++
+                     // Extract order_id from various possible fields
+                     const orderId = order.order_id || order.id || order.order_number || order.orderId;
+-                    
++
+                     if (!orderId) {
+                         console.warn("fetchSearchOrders: Order has no order_id:", order);
+                         return order; // Return as-is if no order_id
+                     }
+-                    
++
+                     // Check if order already has items - if yes, use it directly
+                     const hasItems = Array.isArray(order.items) && order.items.length > 0;
+                     const hasAllFields = order.customer_name && order.phone_number && order.delivery_type;
+-                    
++
+                     // If order has items and all required fields, use it directly
+                     if (hasItems && hasAllFields) {
+                         console.log(`fetchSearchOrders: Order ${orderId} already has complete data, using directly`);
+                         return order;
+                     }
+-                    
++
+                     // Otherwise, fetch full order details
+                     try {
+                         console.log(`fetchSearchOrders: Fetching full details for order ${orderId}`);
+@@ -661,7 +661,7 @@ const SalesRetailInvoice = () => {
+                             user_id: userId,
+                             order_id: String(orderId)
+                         });
+-                        
++
+                         if (fullOrderData) {
+                             // Handle different response structures
+                             let fullOrder = null;
+@@ -670,7 +670,7 @@ const SalesRetailInvoice = () => {
+                             } else if (fullOrderData.order_id || fullOrderData.items) {
+                                 fullOrder = fullOrderData;
+                             }
+-                            
++
+                             if (fullOrder) {
+                                 console.log(`fetchSearchOrders: Got full details for order ${orderId}:`, fullOrder);
+                                 // Merge search result with full details (full details take precedence, but preserve search result fields)
+@@ -690,7 +690,7 @@ const SalesRetailInvoice = () => {
+                     }
+                 })
+             );
+-            
++
+             // Filter out null entries
+             const validOrders = ordersWithFullDetails.filter(order => order != null);
+             console.log("fetchSearchOrders: Orders with full details:", validOrders);
+@@ -701,11 +701,11 @@ const SalesRetailInvoice = () => {
+                     console.warn("fetchSearchOrders: Invalid order object:", order);
+                     return null;
+                 }
+-                
++
+                 console.log("fetchSearchOrders: Raw order before normalization:", JSON.stringify(order, null, 2));
+-                
++
+                 const base = { ...order };
+-                
++
+                 // Extract order_id from various possible fields
+                 if (!base.order_id) {
+                     if (base.id) base.order_id = String(base.id);
+@@ -713,7 +713,7 @@ const SalesRetailInvoice = () => {
+                     else if (base.orderId) base.order_id = String(base.orderId);
+                 }
+                 if (base.order_id) base.order_id = String(base.order_id);
+-                
++
+                 // Extract customer_name from various possible fields
+                 if (!base.customer_name || base.customer_name === "") {
+                     if (base.customer) base.customer_name = String(base.customer);
+@@ -721,7 +721,7 @@ const SalesRetailInvoice = () => {
+                     else if (base.customer_name) base.customer_name = String(base.customer_name);
+                 }
+                 if (base.customer_name) base.customer_name = String(base.customer_name);
+-                
++
+                 // Extract phone_number from various possible fields
+                 if (!base.phone_number || base.phone_number === "") {
+                     if (base.phone) base.phone_number = String(base.phone);
+@@ -730,7 +730,7 @@ const SalesRetailInvoice = () => {
+                     else if (base.phone_number) base.phone_number = String(base.phone_number);
+                 }
+                 if (base.phone_number) base.phone_number = String(base.phone_number);
+-                
++
+                 // Extract delivery_type from various possible fields
+                 if (!base.delivery_type || base.delivery_type === "") {
+                     if (base.delivery_method) base.delivery_type = String(base.delivery_method);
+@@ -738,7 +738,7 @@ const SalesRetailInvoice = () => {
+                     else if (base.delivery_type) base.delivery_type = String(base.delivery_type);
+                 }
+                 if (base.delivery_type) base.delivery_type = String(base.delivery_type);
+-                
++
+                 // Extract created_at from various possible fields
+                 if (!base.created_at || base.created_at === "") {
+                     if (base.created_date) base.created_at = base.created_date;
+@@ -746,7 +746,7 @@ const SalesRetailInvoice = () => {
+                     else if (base.created) base.created_at = base.created;
+                     else if (base.created_at) base.created_at = base.created_at;
+                 }
+-                
++
+                 // Extract delivery_date from various possible fields
+                 if (!base.delivery_date || base.delivery_date === "") {
+                     if (base.delivery_due_date) base.delivery_date = base.delivery_due_date;
+@@ -754,7 +754,7 @@ const SalesRetailInvoice = () => {
+                     else if (base.due_date) base.delivery_date = base.due_date;
+                     else if (base.delivery_date) base.delivery_date = base.delivery_date;
+                 }
+-                
++
+                 // Normalize items array - handle various structures
+                 if (!Array.isArray(base.items)) {
+                     if (base.items && typeof base.items === "object" && !Array.isArray(base.items)) {
+@@ -765,7 +765,7 @@ const SalesRetailInvoice = () => {
+                         base.items = [];
+                     }
+                 }
+-                
++
+                 const items = base.items || [];
+                 const normalizedItems = [];
+                 items.forEach((item) => {
+@@ -776,33 +776,33 @@ const SalesRetailInvoice = () => {
+                     }
+                 });
+                 base.items = normalizedItems;
+-                
++
+                 // Normalize amounts - preserve as numbers for calculations, but ensure they exist
+                 const parseAmount = (val) => {
+                     if (val == null || val === "" || val === undefined) return null;
+                     const num = typeof val === "number" ? val : parseFloat(String(val).replace(/,/g, ""));
+                     return isNaN(num) ? null : num;
+                 };
+-                
++
+                 base.total_amount = parseAmount(base.total_amount ?? base.totalAmount ?? base.totalAmount);
+                 base.remaining_amount = parseAmount(base.remaining_amount ?? base.remainingAmount ?? base.remainingAmount);
+                 base.advance_payment = parseAmount(base.advance_payment ?? base.advancePayment ?? base.advancePayment);
+                 base.delivery_charge = parseAmount(base.delivery_charge ?? base.deliveryCharge ?? base.deliveryCharge);
+-                
++
+                 // Calculate remaining_amount if not provided
+                 if (base.remaining_amount == null && base.total_amount != null) {
+                     const total = Number(base.total_amount) || 0;
+                     const advance = Number(base.advance_payment) || 0;
+                     base.remaining_amount = total - advance;
+                 }
+-                
++
+                 // Normalize status
+                 if (base.status == null && base.order_status != null) base.status = base.order_status;
+                 if (base.order_status == null && base.status != null) base.order_status = base.status;
+-                
++
+                 // Ensure invoice_id if exists
+                 if (base.invoice_id == null && base.invoiceId != null) base.invoice_id = String(base.invoiceId);
+-                
++
+                 console.log("fetchSearchOrders: Normalized order:", {
+                     order_id: base.order_id,
+                     customer_name: base.customer_name,
+@@ -816,13 +816,13 @@ const SalesRetailInvoice = () => {
+                     remaining_amount: base.remaining_amount,
+                     delivery_charge: base.delivery_charge
+                 });
+-                
++
+                 return base;
+             }).filter(order => order != null); // Remove any null entries
+ 
+             console.log("fetchSearchOrders: Final displayList:", displayList);
+             console.log("fetchSearchOrders: displayList length:", displayList.length);
+-            
++
+             if (displayList.length === 0) {
+                 console.warn("fetchSearchOrders: No orders found after processing");
+                 setSearchResults([]);
+@@ -830,7 +830,7 @@ const SalesRetailInvoice = () => {
+                 setSearchResultsHasMore(false);
+                 return;
+             }
+-            
++
+             if (append) {
+                 setSearchResults((prev) => {
+                     const seen = new Set(prev.map((o) => o.order_id ?? o.id));
+@@ -1106,7 +1106,7 @@ const SalesRetailInvoice = () => {
+         setAlreadyInvoicedHasMore(false);
+         setTotalOrdersCount(null);
+         setLoadedPagesCount(0);
+-        
++
+         fetchAllPendingInvoices(0, false, branchFilter);
+         fetchAllInvoiced(0, false);
+         fetchTotalOrders();
+@@ -1149,7 +1149,7 @@ const SalesRetailInvoice = () => {
+         setCurrentPage(1);
+         lastStableTotalPagesRef.current = 1;
+         lastStableWindowRef.current = { start: 1, end: 5 };
+-        
++
+         // Clear search when switching between invoice tabs (tab 1: Pending, tab 2: Already Invoiced)
+         if (selectedTab === 1 || selectedTab === 2) {
+             setSearchQuery("");
+@@ -1158,7 +1158,7 @@ const SalesRetailInvoice = () => {
+             setSearchResultsOffset(0);
+             setSearchResultsHasMore(false);
+         }
+-        
++
+         // When switching to Already Invoiced tab (tab 2), fetch data if not already loaded
+         if (selectedTab === 2 && alreadyInvoiced.length === 0 && totalAlreadyInvoicedCount === null) {
+             setIsLoading(true); // Show loader immediately until table has data
+@@ -1242,11 +1242,11 @@ const SalesRetailInvoice = () => {
+ 
+     const handleDateChangeSubmit = async () => {
+         if (!selectedOrderForDateChange || !selectedNewDate) return;
+-        
++
+         const userId = localStorage.getItem("userId");
+         // Use 'invoice_id' field from API response (e.g. "26FEB_L3KH_205")
+         const invoiceId = selectedOrderForDateChange.invoice_id;
+-        
++
+         if (!userId) {
+             Swal.fire({
+                 icon: "error",
+@@ -1255,7 +1255,7 @@ const SalesRetailInvoice = () => {
+             });
+             return;
+         }
+-        
++
+         if (!invoiceId) {
+             Swal.fire({
+                 icon: "error",
+@@ -1274,23 +1274,23 @@ const SalesRetailInvoice = () => {
+                 invoice_id: invoiceId,
+                 new_date: `${selectedNewDate} ${currentTime}`
+             };
+-            
++
+             const response = await updateInvoiceDate(payload);
+-            
++
+             if (response) {
+                 Swal.fire({
+                     icon: "success",
+                     title: "Success",
+                     text: "Invoice date updated successfully.",
+                 });
+-                
++
+                 // Update the order in local state
+-                setAlreadyInvoiced(prev => prev.map(order => 
+-                    order.invoice_id === invoiceId 
++                setAlreadyInvoiced(prev => prev.map(order =>
++                    order.invoice_id === invoiceId
+                         ? { ...order, printed_at: `${selectedNewDate}T${currentTime}` }
+                         : order
+                 ));
+-                
++
+                 setShowDateChangeCalendar(false);
+                 setSelectedOrderForDateChange(null);
+                 setSelectedNewDate("");
+@@ -1323,128 +1323,128 @@ const SalesRetailInvoice = () => {
+             return orderDateStr !== "" && orderDateStr === todayStr;
+         })
+         : selectedTab === 2
+-        ? alreadyInvoiced.filter((order) => {
+-            const matchesQuery = (field) => {
+-                if (!submittedSearchQuery || !field) return false;
++            ? alreadyInvoiced.filter((order) => {
++                const matchesQuery = (field) => {
++                    if (!submittedSearchQuery || !field) return false;
+ 
+-                const fieldStr = field.toString().toLowerCase();
+-                const searchWords = submittedSearchQuery
+-                    .toLowerCase()
+-                    .split(/\s*\*\s*/) // split by `*` with optional spaces
+-                    .filter(word => word.trim().length > 0);
++                    const fieldStr = field.toString().toLowerCase();
++                    const searchWords = submittedSearchQuery
++                        .toLowerCase()
++                        .split(/\s*\*\s*/) // split by `*` with optional spaces
++                        .filter(word => word.trim().length > 0);
+ 
+-                return searchWords.every(word => fieldStr.includes(word));
+-            };
++                    return searchWords.every(word => fieldStr.includes(word));
++                };
+ 
+-            const matchesSearch = submittedSearchQuery
+-                ? matchesQuery(order.invoice_id) ||
+-                matchesQuery(order.order_id) ||
+-                matchesQuery(order.customer_name) ||
+-                matchesQuery(order.phone_number)
+-                : true;
+-
+-            const matchesStatusFilter = deliveryTypeFilter
+-                ? order.delivery_type === deliveryTypeFilter
+-                : true;
+-
+-            const matchesBranchFilter = (() => {
+-                const storedId = (branchFilter != null && String(branchFilter).trim() !== "") ? String(branchFilter) : null;
+-                if (!storedId) return true;
+-
+-                const targetBranch = branches.find(b => String(b.value) === String(storedId));
+-                const targetName = targetBranch ? targetBranch.label : "";
+-                const outletName = String(order.delivery_outlet || "").toLowerCase().trim();
+-                const outletId = order.delivery_outlet_id != null ? String(order.delivery_outlet_id) : "";
+-                const orderBranchId = order.branch_id != null ? String(order.branch_id) : "";
+-
+-                if (targetName && outletName && outletName === targetName) return true;
+-                if (targetName && outletName && outletName.includes(targetName)) return true;
+-                if (outletId && outletId === storedId) return true;
+-                if (orderBranchId && orderBranchId === storedId) return true;
+-                if (outletId && outletId !== storedId) return false;
+-                if (orderBranchId && orderBranchId !== storedId) return false;
+-                if (outletName && targetName && outletName !== targetName && !outletName.includes(targetName)) return false;
+-                return false;
+-            })();
++                const matchesSearch = submittedSearchQuery
++                    ? matchesQuery(order.invoice_id) ||
++                    matchesQuery(order.order_id) ||
++                    matchesQuery(order.customer_name) ||
++                    matchesQuery(order.phone_number)
++                    : true;
+ 
+-            const todayStr = getLocalDateStringForOrders(new Date());
+-            const orderDateStr = getLocalDateStringForOrders(order.created_at);
+-            const matchesTodayFilter = isTodaySelected
+-                ? (orderDateStr !== "" && orderDateStr === todayStr)
+-                : true;
++                const matchesStatusFilter = deliveryTypeFilter
++                    ? order.delivery_type === deliveryTypeFilter
++                    : true;
+ 
+-            return matchesSearch && matchesStatusFilter && matchesBranchFilter && matchesTodayFilter;
+-        })
+-        : invoices.filter((order) => {
+-            const matchesQuery = (field) => {
+-                if (!submittedSearchQuery || !field) return false;
++                const matchesBranchFilter = (() => {
++                    const storedId = (branchFilter != null && String(branchFilter).trim() !== "") ? String(branchFilter) : null;
++                    if (!storedId) return true;
++
++                    const targetBranch = branches.find(b => String(b.value) === String(storedId));
++                    const targetName = targetBranch ? targetBranch.label : "";
++                    const outletName = String(order.delivery_outlet || "").toLowerCase().trim();
++                    const outletId = order.delivery_outlet_id != null ? String(order.delivery_outlet_id) : "";
++                    const orderBranchId = order.branch_id != null ? String(order.branch_id) : "";
++
++                    if (targetName && outletName && outletName === targetName) return true;
++                    if (targetName && outletName && outletName.includes(targetName)) return true;
++                    if (outletId && outletId === storedId) return true;
++                    if (orderBranchId && orderBranchId === storedId) return true;
++                    if (outletId && outletId !== storedId) return false;
++                    if (orderBranchId && orderBranchId !== storedId) return false;
++                    if (outletName && targetName && outletName !== targetName && !outletName.includes(targetName)) return false;
++                    return false;
++                })();
++
++                const todayStr = getLocalDateStringForOrders(new Date());
++                const orderDateStr = getLocalDateStringForOrders(order.created_at);
++                const matchesTodayFilter = isTodaySelected
++                    ? (orderDateStr !== "" && orderDateStr === todayStr)
++                    : true;
+ 
+-                const fieldStr = field.toString().toLowerCase();
+-                const searchWords = submittedSearchQuery
+-                    .toLowerCase()
+-                    .split(/\s*\*\s*/) // split by `*` with optional spaces
+-                    .filter(word => word.trim().length > 0);
++                return matchesSearch && matchesStatusFilter && matchesBranchFilter && matchesTodayFilter;
++            })
++            : invoices.filter((order) => {
++                const matchesQuery = (field) => {
++                    if (!submittedSearchQuery || !field) return false;
+ 
+-                return searchWords.every(word => fieldStr.includes(word));
+-            };
++                    const fieldStr = field.toString().toLowerCase();
++                    const searchWords = submittedSearchQuery
++                        .toLowerCase()
++                        .split(/\s*\*\s*/) // split by `*` with optional spaces
++                        .filter(word => word.trim().length > 0);
+ 
+-            const matchesSearch = submittedSearchQuery
+-                ? matchesQuery(order.order_id) ||
+-                matchesQuery(order.customer_name) ||
+-                matchesQuery(order.phone_number)
+-                : true;
++                    return searchWords.every(word => fieldStr.includes(word));
++                };
+ 
+-            const matchesStatusFilter = deliveryTypeFilter
+-                ? order.delivery_type === deliveryTypeFilter
+-                : true;
++                const matchesSearch = submittedSearchQuery
++                    ? matchesQuery(order.order_id) ||
++                    matchesQuery(order.customer_name) ||
++                    matchesQuery(order.phone_number)
++                    : true;
+ 
+-            const matchesBranchFilter = (() => {
+-                const storedId = (branchFilter != null && String(branchFilter).trim() !== "") ? String(branchFilter) : null;
+-                if (!storedId) return true;
++                const matchesStatusFilter = deliveryTypeFilter
++                    ? order.delivery_type === deliveryTypeFilter
++                    : true;
+ 
+-                // If allBranchesPendingFullList is empty, we fetched for a specific branch from API
+-                // In that case, skip branch filtering since API already filtered correctly
+-                if (allBranchesPendingFullList.length === 0) {
+-                    return true;
+-                }
++                const matchesBranchFilter = (() => {
++                    const storedId = (branchFilter != null && String(branchFilter).trim() !== "") ? String(branchFilter) : null;
++                    if (!storedId) return true;
+ 
+-                // For "all branches" mode, apply branch filtering
+-                const targetBranch = branches.find(b => String(b.value) === String(storedId));
+-                const targetName = (targetBranch ? targetBranch.label : "").toLowerCase().trim();
+-                const outletName = String(order.delivery_outlet || "").toLowerCase().trim();
+-                const outletId = order.delivery_outlet_id != null ? String(order.delivery_outlet_id) : "";
+-                const orderBranchId = order.branch_id != null ? String(order.branch_id) : "";
+-
+-                // Include if order belongs to selected branch: match by outlet name, outlet id, or branch_id (same as Already Invoiced tab)
+-                if (targetName && outletName && outletName === targetName) return true;
+-                if (targetName && outletName && outletName.includes(targetName)) return true;
+-                if (outletId && outletId === storedId) return true;
+-                if (orderBranchId && orderBranchId === storedId) return true;
+-                // Exclude when order clearly belongs to another branch
+-                if (outletId && outletId !== storedId) return false;
+-                if (orderBranchId && orderBranchId !== storedId) return false;
+-                if (outletName && targetName && outletName !== targetName && !outletName.includes(targetName)) return false;
+-                return false;
+-            })();
+-
+-            const matchesSelectedCustomer =
+-                selectedCustomerId
+-                    ? order.customer_id === selectedCustomerId
+-                    : true;
++                    // If allBranchesPendingFullList is empty, we fetched for a specific branch from API
++                    // In that case, skip branch filtering since API already filtered correctly
++                    if (allBranchesPendingFullList.length === 0) {
++                        return true;
++                    }
+ 
+-            const today = new Date();
+-            const getLocalDateString = (d) => {
+-                if (!d || isNaN(d.getTime())) return "";
+-                return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+-            };
+-            const todayStr = getLocalDateString(today);
+-            const orderDateStr = getLocalDateString(new Date(order.created_at));
+-            const matchesTodayFilter = isTodaySelected
+-                ? (orderDateStr !== "" && orderDateStr === todayStr)
+-                : true;
++                    // For "all branches" mode, apply branch filtering
++                    const targetBranch = branches.find(b => String(b.value) === String(storedId));
++                    const targetName = (targetBranch ? targetBranch.label : "").toLowerCase().trim();
++                    const outletName = String(order.delivery_outlet || "").toLowerCase().trim();
++                    const outletId = order.delivery_outlet_id != null ? String(order.delivery_outlet_id) : "";
++                    const orderBranchId = order.branch_id != null ? String(order.branch_id) : "";
++
++                    // Include if order belongs to selected branch: match by outlet name, outlet id, or branch_id (same as Already Invoiced tab)
++                    if (targetName && outletName && outletName === targetName) return true;
++                    if (targetName && outletName && outletName.includes(targetName)) return true;
++                    if (outletId && outletId === storedId) return true;
++                    if (orderBranchId && orderBranchId === storedId) return true;
++                    // Exclude when order clearly belongs to another branch
++                    if (outletId && outletId !== storedId) return false;
++                    if (orderBranchId && orderBranchId !== storedId) return false;
++                    if (outletName && targetName && outletName !== targetName && !outletName.includes(targetName)) return false;
++                    return false;
++                })();
++
++                const matchesSelectedCustomer =
++                    selectedCustomerId
++                        ? order.customer_id === selectedCustomerId
++                        : true;
++
++                const today = new Date();
++                const getLocalDateString = (d) => {
++                    if (!d || isNaN(d.getTime())) return "";
++                    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
++                };
++                const todayStr = getLocalDateString(today);
++                const orderDateStr = getLocalDateString(new Date(order.created_at));
++                const matchesTodayFilter = isTodaySelected
++                    ? (orderDateStr !== "" && orderDateStr === todayStr)
++                    : true;
+ 
+-            return matchesSearch && matchesStatusFilter && matchesSelectedCustomer && matchesBranchFilter && matchesTodayFilter;
+-        });
++                return matchesSearch && matchesStatusFilter && matchesSelectedCustomer && matchesBranchFilter && matchesTodayFilter;
++            });
+ 
+     const getLocalDateStringForFilter = (d) => {
+         if (!d || isNaN(new Date(d).getTime())) return "";
+@@ -1558,7 +1558,7 @@ const SalesRetailInvoice = () => {
+     useEffect(() => {
+         if (selectedTab !== 1 || isSearchMode) return;
+         const isAllBranches = !branchFilter || String(branchFilter).trim() === "";
+-        
++
+         if (isAllBranches) {
+             // All branches: fetch the current page from API only when page or branch changed (avoid loop)
+             const prev = lastPendingAllBranchesFetchRef.current;
+@@ -1582,7 +1582,7 @@ const SalesRetailInvoice = () => {
+     useEffect(() => {
+         if (selectedTab !== 2 || isSearchMode) return;
+         const isAllBranches = !branchFilter || String(branchFilter).trim() === "";
+-        
++
+         if (isAllBranches) {
+             // For all branches: show more from already-loaded list (existing logic)
+             const needed = currentPage * itemsPerPage;
+@@ -1690,190 +1690,190 @@ const SalesRetailInvoice = () => {
+ 
+             {/* Filter Section - hidden on Sell Vouchers (tab 3) */}
+             {selectedTab !== 3 && (
+-            <div className="flex flex-row gap-x-5">
+-                <div className="flex flex-row border border-primary rounded-full h-fit w-1/2 bg-white">
+-                    <div className="flex justify-center items-center rounded-l-full px-5">
+-                        <MdSearch className="size-6 text-primary" />
+-                    </div>
++                <div className="flex flex-row gap-x-5">
++                    <div className="flex flex-row border border-primary rounded-full h-fit w-1/2 bg-white">
++                        <div className="flex justify-center items-center rounded-l-full px-5">
++                            <MdSearch className="size-6 text-primary" />
++                        </div>
+ 
+-                    <input
+-                        className={`grow h-fit px-3 py-1 text-lg rounded-r-full border border-transparent focus:outline-none`}
+-                        type="text"
+-                        value={selectedTab === 4 ? searchQuerySoldVouchers : searchQuery}
+-                        onChange={(e) => {
+-                            if (selectedTab === 4) {
+-                                setSearchQuerySoldVouchers(e.target.value);
+-                            } else {
+-                                const value = e.target.value;
+-                                setSearchQuery(value);
+-                                if (!value.trim()) {
+-                                    setSubmittedSearchQuery("");
++                        <input
++                            className={`grow h-fit px-3 py-1 text-lg rounded-r-full border border-transparent focus:outline-none`}
++                            type="text"
++                            value={selectedTab === 4 ? searchQuerySoldVouchers : searchQuery}
++                            onChange={(e) => {
++                                if (selectedTab === 4) {
++                                    setSearchQuerySoldVouchers(e.target.value);
++                                } else {
++                                    const value = e.target.value;
++                                    setSearchQuery(value);
++                                    if (!value.trim()) {
++                                        setSubmittedSearchQuery("");
++                                        setSearchResults([]);
++                                        setSearchResultsOffset(0);
++                                        setSearchResultsHasMore(false);
++                                    }
++                                }
++                            }}
++                            onKeyDown={(e) => {
++                                if (selectedTab === 4) return;
++                                if (e.key !== "Enter") return;
++                                const q = searchQuery.trim();
++                                setSubmittedSearchQuery(q);
++                                setCurrentPage(1);
++                                if (q) fetchSearchOrders(false);
++                                else {
+                                     setSearchResults([]);
+                                     setSearchResultsOffset(0);
+                                     setSearchResultsHasMore(false);
+                                 }
+-                            }
+-                        }}
+-                        onKeyDown={(e) => {
+-                            if (selectedTab === 4) return;
+-                            if (e.key !== "Enter") return;
+-                            const q = searchQuery.trim();
+-                            setSubmittedSearchQuery(q);
+-                            setCurrentPage(1);
+-                            if (q) fetchSearchOrders(false);
+-                            else {
+-                                setSearchResults([]);
+-                                setSearchResultsOffset(0);
+-                                setSearchResultsHasMore(false);
+-                            }
+-                        }}
+-                        placeholder={selectedTab === 4 ? "Search..." : "Search Orders here (press Enter)..."}
+-                    />
+-                </div>
++                            }}
++                            placeholder={selectedTab === 4 ? "Search..." : "Search Orders here (press Enter)..."}
++                        />
++                    </div>
+ 
+-                {selectedTab === 4 && (
+-                    <>
+-                        <div
+-                            className={`flex flex-row items-center rounded-xl bg-white text-xl gap-x-3 px-5 border cursor-pointer ${isSoldVouchersTodaySelected ? "text-primary border-primary" : "text-black/50 border-black/50"}`}
+-                            onClick={() => setIsSoldVouchersTodaySelected(!isSoldVouchersTodaySelected)}
+-                        >
+-                            <Icon icon={"lets-icons:date-fill"} />
+-                            <p className="font-semibold">Today</p>
+-                        </div>
+-                        <div className="flex flex-row items-center rounded-xl bg-white text-xl gap-x-2 px-4 border border-black/20 text-black/70 min-w-[160px]">
+-                            <p className="font-semibold text-lg whitespace-nowrap">Voucher Amount</p>
+-                            <select
+-                                value={soldVouchersAmountFilter}
+-                                onChange={(e) => setSoldVouchersAmountFilter(e.target.value)}
+-                                className="border-0 bg-transparent font-semibold text-primary focus:outline-none cursor-pointer appearance-none pr-1"
++                    {selectedTab === 4 && (
++                        <>
++                            <div
++                                className={`flex flex-row items-center rounded-xl bg-white text-xl gap-x-3 px-5 border cursor-pointer ${isSoldVouchersTodaySelected ? "text-primary border-primary" : "text-black/50 border-black/50"}`}
++                                onClick={() => setIsSoldVouchersTodaySelected(!isSoldVouchersTodaySelected)}
+                             >
+-                                <option value="all">All</option>
+-                                <option value="0-5000">0 - 5,000</option>
+-                                <option value="5000-10000">5,000 - 10,000</option>
+-                                <option value="10000+">10,000+</option>
+-                            </select>
+-                            <Icon icon="mdi:chevron-down" className="size-5 text-primary shrink-0" />
+-                        </div>
+-                    </>
+-                )}
+-
+-                {selectedTab !== 3 && selectedTab !== 4 && (
+-                    <>
+-                        <div
+-                            className={`flex flex-row items-center rounded-xl bg-white text-xl gap-x-3 px-5 border cursor-pointer ${isTodaySelected ? "text-primary border-primary" : "text-black/50 border-black/50"}`}
+-                            onClick={() => setIsTodaySelected(!isTodaySelected)}
+-                        >
+-                            <Icon icon={"lets-icons:date-fill"} />
+-                            <p className="font-semibold">Today</p>
+-                        </div>
++                                <Icon icon={"lets-icons:date-fill"} />
++                                <p className="font-semibold">Today</p>
++                            </div>
++                            <div className="flex flex-row items-center rounded-xl bg-white text-xl gap-x-2 px-4 border border-black/20 text-black/70 min-w-[160px]">
++                                <p className="font-semibold text-lg whitespace-nowrap">Voucher Amount</p>
++                                <select
++                                    value={soldVouchersAmountFilter}
++                                    onChange={(e) => setSoldVouchersAmountFilter(e.target.value)}
++                                    className="border-0 bg-transparent font-semibold text-primary focus:outline-none cursor-pointer appearance-none pr-1"
++                                >
++                                    <option value="all">All</option>
++                                    <option value="0-5000">0 - 5,000</option>
++                                    <option value="5000-10000">5,000 - 10,000</option>
++                                    <option value="10000+">10,000+</option>
++                                </select>
++                                <Icon icon="mdi:chevron-down" className="size-5 text-primary shrink-0" />
++                            </div>
++                        </>
++                    )}
++
++                    {selectedTab !== 3 && selectedTab !== 4 && (
++                        <>
++                            <div
++                                className={`flex flex-row items-center rounded-xl bg-white text-xl gap-x-3 px-5 border cursor-pointer ${isTodaySelected ? "text-primary border-primary" : "text-black/50 border-black/50"}`}
++                                onClick={() => setIsTodaySelected(!isTodaySelected)}
++                            >
++                                <Icon icon={"lets-icons:date-fill"} />
++                                <p className="font-semibold">Today</p>
++                            </div>
++
++                            <div className="flex flex-row items-center rounded-xl bg-white text-xl gap-x-2 px-4 border border-black/20 text-black/70 min-w-[200px]">
++                                <Icon icon="mdi:store-marker-outline" className="text-primary text-2xl" />
++                                <FilterSelector
++                                    options={(() => {
++                                        if (isOutletAssistant) {
++                                            const loggedInId = localStorage.getItem("selectedBranchId") || "";
++                                            const loggedInBranch = branches.find((b) => String(b.value ?? "") === String(loggedInId));
++                                            return loggedInBranch ? [loggedInBranch] : [{ value: loggedInId, label: `Branch ${loggedInId}` }];
++                                        }
++                                        const base = [{ value: "", label: "All Branches" }, ...branches.filter((b) => (b.label || "").toString().toLowerCase().trim() !== "all branches" && String(b.value ?? "").trim() !== "")];
++                                        return base.filter((o) => (o.label || "").toString().toLowerCase().trim() !== "all branches" || String(o.value ?? "").trim() === "");
++                                    })()}
++                                    value={branchFilter}
++                                    onChange={(e) => setBranchFilter(e.target.value)}
++                                    placeholder="All Branches"
++                                    disabled={isOutletAssistant}
++                                />
++                            </div>
+ 
+-                        <div className="flex flex-row items-center rounded-xl bg-white text-xl gap-x-2 px-4 border border-black/20 text-black/70 min-w-[200px]">
+-                            <Icon icon="mdi:store-marker-outline" className="text-primary text-2xl" />
+                             <FilterSelector
+-                                options={(() => {
+-                                    if (isOutletAssistant) {
+-                                        const loggedInId = localStorage.getItem("selectedBranchId") || "";
+-                                        const loggedInBranch = branches.find((b) => String(b.value ?? "") === String(loggedInId));
+-                                        return loggedInBranch ? [loggedInBranch] : [{ value: loggedInId, label: `Branch ${loggedInId}` }];
+-                                    }
+-                                    const base = [{ value: "", label: "All Branches" }, ...branches.filter((b) => (b.label || "").toString().toLowerCase().trim() !== "all branches" && String(b.value ?? "").trim() !== "")];
+-                                    return base.filter((o) => (o.label || "").toString().toLowerCase().trim() !== "all branches" || String(o.value ?? "").trim() === "");
+-                                })()}
+-                                value={branchFilter}
+-                                onChange={(e) => setBranchFilter(e.target.value)}
+-                                placeholder="All Branches"
+-                                disabled={isOutletAssistant}
++                                options={deliveryTypeOptions}
++                                value={deliveryTypeFilter}
++                                onChange={handleDeliveryTypeFilterChange}
+                             />
+-                        </div>
+-
+-                        <FilterSelector
+-                            options={deliveryTypeOptions}
+-                            value={deliveryTypeFilter}
+-                            onChange={handleDeliveryTypeFilterChange}
+-                        />
+-                    </>
+-                )}
+-
+-                {!selectMultiple && selectedTab === 1 &&
+-                    <button
+-                        className="bg-white rounded-xl border border-primary font-semibold text-primary px-3 ms-auto"
+-                        onClick={() => setSelectMulitple(true)}
+-                    >Select Multiple
+-                    </button>
+-                }
++                        </>
++                    )}
+ 
+-                {selectMultiple && selectedOrders.length < ordersForTable.length &&
+-                    <div className="flex flex-row gap-x-5 ms-auto items-center">
+-                        <p>Selected {selectedOrders.length} of {ordersForTable.length}</p>
+-                        {selectedOrders.length > 0 &&
+-                            <button
+-                                className="bg-white rounded-xl border border-primary font-semibold text-primary px-3 py-1.5"
+-                                onClick={() => setSelectedOrders(ordersForTable.map(order => order.order_id))}
+-                            >Select All
+-                            </button>
+-                        }
+-                        <Link
+-                            className={
+-                                `bg-primary rounded-xl border border-primary font-semibold px-3 py-1.5 text-center ${selectedOrders.length === 0
+-                                    ? "pointer-events-none opacity-50 text-white/50"
+-                                    : "text-white"
+-                                }`
+-                            }
+-                            to={
+-                                selectedOrders.length > 0
+-                                    ? `/sales/retail/invoice/${selectedOrders.join(",")}/generate`
+-                                    : "#"
+-                            }
+-                            state={selectedOrders.length > 0 ? { orders: ordersForTable.filter(o => selectedOrders.includes(o.order_id)) } : null}
+-                        >
+-                            Generate Invoice
+-                        </Link>
++                    {!selectMultiple && selectedTab === 1 &&
+                         <button
+-                            className="bg-white rounded-xl border border-red-500 font-semibold text-red-500 px-3 py-1.5"
+-                            onClick={() => {
+-                                setSelectMulitple(false);
+-                                setSelectedOrders([]);
+-                            }}
+-                        >Cancel
++                            className="bg-white rounded-xl border border-primary font-semibold text-primary px-3 ms-auto"
++                            onClick={() => setSelectMulitple(true)}
++                        >Select Multiple
+                         </button>
+-                    </div>
+-                }
++                    }
+ 
+-                {selectMultiple && selectedOrders.length === ordersForTable.length &&
+-                    <div className="flex flex-row gap-x-5 ms-auto items-center">
+-                        <p>Selected {selectedOrders.length} of {ordersForTable.length}</p>
+-                        <button
+-                            className="bg-white rounded-xl border border-primary font-semibold text-primary px-3 py-1.5"
+-                            onClick={() => setSelectedOrders([])}
+-                        >Deselect All
+-                        </button>
+-                        <Link
+-                            className={
+-                                `bg-primary rounded-xl border border-primary font-semibold px-3 py-1.5 text-center ${selectedOrders.length === 0
+-                                    ? "pointer-events-none opacity-50 text-white/50"
+-                                    : "text-white"
+-                                }`
+-                            }
+-                            to={
+-                                selectedOrders.length > 0
+-                                    ? `/sales/retail/invoice/${selectedOrders.join(",")}/generate`
+-                                    : "#"
++                    {selectMultiple && selectedOrders.length < ordersForTable.length &&
++                        <div className="flex flex-row gap-x-5 ms-auto items-center">
++                            <p>Selected {selectedOrders.length} of {ordersForTable.length}</p>
++                            {selectedOrders.length > 0 &&
++                                <button
++                                    className="bg-white rounded-xl border border-primary font-semibold text-primary px-3 py-1.5"
++                                    onClick={() => setSelectedOrders(ordersForTable.map(order => order.order_id))}
++                                >Select All
++                                </button>
+                             }
+-                            state={selectedOrders.length > 0 ? { orders: ordersForTable.filter(o => selectedOrders.includes(o.order_id)) } : null}
+-                        >
+-                            Generate Invoice
+-                        </Link>
+-                        <button
+-                            className="bg-white rounded-xl border border-red-500 font-semibold text-red-500 px-3 py-1.5"
+-                            onClick={() => {
+-                                setSelectMulitple(false);
+-                                setSelectedOrders([]);
+-                            }}
+-                        >Cancel
+-                        </button>
+-                    </div>
+-                }
+-            </div>
++                            <Link
++                                className={
++                                    `bg-primary rounded-xl border border-primary font-semibold px-3 py-1.5 text-center ${selectedOrders.length === 0
++                                        ? "pointer-events-none opacity-50 text-white/50"
++                                        : "text-white"
++                                    }`
++                                }
++                                to={
++                                    selectedOrders.length > 0
++                                        ? `/sales/retail/invoice/${selectedOrders.join(",")}/generate`
++                                        : "#"
++                                }
++                                state={selectedOrders.length > 0 ? { orders: ordersForTable.filter(o => selectedOrders.includes(o.order_id)) } : null}
++                            >
++                                Generate Invoice
++                            </Link>
++                            <button
++                                className="bg-white rounded-xl border border-red-500 font-semibold text-red-500 px-3 py-1.5"
++                                onClick={() => {
++                                    setSelectMulitple(false);
++                                    setSelectedOrders([]);
++                                }}
++                            >Cancel
++                            </button>
++                        </div>
++                    }
++
++                    {selectMultiple && selectedOrders.length === ordersForTable.length &&
++                        <div className="flex flex-row gap-x-5 ms-auto items-center">
++                            <p>Selected {selectedOrders.length} of {ordersForTable.length}</p>
++                            <button
++                                className="bg-white rounded-xl border border-primary font-semibold text-primary px-3 py-1.5"
++                                onClick={() => setSelectedOrders([])}
++                            >Deselect All
++                            </button>
++                            <Link
++                                className={
++                                    `bg-primary rounded-xl border border-primary font-semibold px-3 py-1.5 text-center ${selectedOrders.length === 0
++                                        ? "pointer-events-none opacity-50 text-white/50"
++                                        : "text-white"
++                                    }`
++                                }
++                                to={
++                                    selectedOrders.length > 0
++                                        ? `/sales/retail/invoice/${selectedOrders.join(",")}/generate`
++                                        : "#"
++                                }
++                                state={selectedOrders.length > 0 ? { orders: ordersForTable.filter(o => selectedOrders.includes(o.order_id)) } : null}
++                            >
++                                Generate Invoice
++                            </Link>
++                            <button
++                                className="bg-white rounded-xl border border-red-500 font-semibold text-red-500 px-3 py-1.5"
++                                onClick={() => {
++                                    setSelectMulitple(false);
++                                    setSelectedOrders([]);
++                                }}
++                            >Cancel
++                            </button>
++                        </div>
++                    }
++                </div>
+             )}
+ 
+             {/* Orders Table for Tabs 1 & 2 */}
+@@ -1928,7 +1928,7 @@ const SalesRetailInvoice = () => {
+                                             if (isNaN(total)) return "0.00";
+                                             return total.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+                                         }
+-                                        
++
+                                         // Fallback: calculate from items if total_amount not available
+                                         // Note: API returns price as unit price and quantity separately, so multiply price * quantity
+                                         const items = order.items || [];
+@@ -1950,7 +1950,7 @@ const SalesRetailInvoice = () => {
+                                         // Use total_amount and advance_payment directly from order
+                                         const totalAmount = Number(order.total_amount) || 0;
+                                         const advancePayment = Number(order.advance_payment) || 0;
+-                                        
++
+                                         // Calculate returned items total from returned_items array
+                                         // Parse returned_items if it's a string (similar to payment field)
+                                         let returnedItemsArray = order.returned_items;
+@@ -1961,7 +1961,7 @@ const SalesRetailInvoice = () => {
+                                                 returnedItemsArray = null;
+                                             }
+                                         }
+-                                        
++
+                                         let returnedTotal = 0;
+                                         // Sum item_price from returned_items array (each item in array = 1 returned item)
+                                         if (returnedItemsArray && Array.isArray(returnedItemsArray) && returnedItemsArray.length > 0) {
+@@ -1970,7 +1970,7 @@ const SalesRetailInvoice = () => {
+                                                 return sum + itemPrice;
+                                             }, 0);
+                                         }
+-                                        
++
+                                         // Calculate damaged items total from damaged_items array
+                                         // Parse damaged_items if it's a string (similar to payment field)
+                                         let damagedItemsArray = order.damaged_items;
+@@ -1981,7 +1981,7 @@ const SalesRetailInvoice = () => {
+                                                 damagedItemsArray = null;
+                                             }
+                                         }
+-                                        
++
+                                         let damagedTotal = 0;
+                                         // Sum item_price from damaged_items array (each item in array = 1 damaged item)
+                                         if (damagedItemsArray && Array.isArray(damagedItemsArray) && damagedItemsArray.length > 0) {
+@@ -1990,10 +1990,10 @@ const SalesRetailInvoice = () => {
+                                                 return sum + itemPrice;
+                                             }, 0);
+                                         }
+-                                        
++
+                                         // Return deduction = returned items total + damaged items total
+                                         const returnDeduction = returnedTotal + damagedTotal;
+-                                        
++
+                                         // Paid Amount = Total Amount - Advance Payment - Return Deduction
+                                         const paidAmount = totalAmount - advancePayment - returnDeduction;
+                                         return paidAmount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+@@ -2012,7 +2012,7 @@ const SalesRetailInvoice = () => {
+                                         return remaining.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+                                     })()}</p>}
+                                     {selectedTab === 2 && isSuperadmin ? (
+-                                        <p 
++                                        <p
+                                             className="cursor-pointer hover:text-primary hover:underline"
+                                             onClick={(e) => {
+                                                 e.stopPropagation();
+@@ -2108,18 +2108,18 @@ const SalesRetailInvoice = () => {
+                                 const rawTotal = totalPages || 1;
+                                 // Use stable total pages: never decrease while loading, always show at least current page
+                                 // This prevents pagination from flickering when totalPages changes
+-                                const displayTotalPages = isLoadingMore 
+-                                    ? Math.max(rawTotal, lastStableTotalPagesRef.current, currentPage) 
++                                const displayTotalPages = isLoadingMore
++                                    ? Math.max(rawTotal, lastStableTotalPagesRef.current, currentPage)
+                                     : Math.max(rawTotal, currentPage);
+                                 if (!isLoadingMore) lastStableTotalPagesRef.current = Math.max(rawTotal, currentPage);
+                                 const effectiveTotalPages = Math.max(displayTotalPages, currentPage);
+                                 const pageWindow = 5;
+                                 const half = Math.floor(pageWindow / 2);
+-                                
++
+                                 // Use stable window: NEVER recalculate during loading - keep exact same window
+                                 let start, end;
+                                 const lastWindow = lastStableWindowRef.current;
+-                                
++
+                                 if (isLoadingMore) {
+                                     // During loading: keep the EXACT same window, never change it
+                                     // This ensures pagination is completely stable during data loading
+@@ -2128,13 +2128,13 @@ const SalesRetailInvoice = () => {
+                                 } else {
+                                     // Not loading: check if we need to recalculate
+                                     const currentPageInLastWindow = currentPage >= lastWindow.start && currentPage <= lastWindow.end;
+-                                    
++
+                                     if (currentPageInLastWindow) {
+                                         // Keep the same window if current page is still in it - don't recalculate
+                                         // This maintains stability when totalPages changes but user hasn't navigated
+                                         start = lastWindow.start;
+                                         end = Math.min(lastWindow.end, effectiveTotalPages);
+-                                        
++
+                                         // Only expand if new pages became available (totalPages increased)
+                                         if (effectiveTotalPages > lastWindow.end) {
+                                             end = Math.min(effectiveTotalPages, lastWindow.end + 1); // Expand by 1 at a time
+@@ -2144,7 +2144,7 @@ const SalesRetailInvoice = () => {
+                                         // This ensures consecutive pages when user navigates
+                                         start = Math.max(1, currentPage - half);
+                                         end = Math.min(effectiveTotalPages, currentPage + half);
+-                                        
++
+                                         // Ensure window is at least pageWindow size and consecutive
+                                         if (end - start + 1 < pageWindow) {
+                                             if (start === 1) {
+@@ -2157,30 +2157,30 @@ const SalesRetailInvoice = () => {
+                                                 end = Math.min(effectiveTotalPages, end + Math.ceil(diff / 2));
+                                             }
+                                         }
+-                                        
++
+                                         // Ensure current page is in the window
+                                         if (currentPage < start) start = currentPage;
+                                         if (currentPage > end) end = currentPage;
+                                     }
+                                 }
+-                                
++
+                                 // Final bounds check (but don't shrink during loading)
+                                 // Ensure start and end are valid integers and consecutive
+                                 start = Math.floor(Math.max(1, Math.min(start, effectiveTotalPages)));
+                                 end = Math.floor(Math.max(start, Math.min(end, effectiveTotalPages)));
+-                                
++
+                                 if (!isLoadingMore) {
+                                     // Ensure current page is always in range
+                                     if (currentPage < start) start = currentPage;
+                                     if (currentPage > end) end = currentPage;
+-                                    
++
+                                     // Ensure window is at least 1 page wide and consecutive
+                                     if (end < start) end = start;
+                                 } else {
+                                     // During loading: keep window stable, just ensure valid bounds
+                                     if (end < start) end = start;
+                                 }
+-                                
++
+                                 // Update stable window ref only when not loading (or when expanding)
+                                 if (!isLoadingMore || end > lastWindow.end) {
+                                     lastStableWindowRef.current = { start, end };
+@@ -2210,7 +2210,7 @@ const SalesRetailInvoice = () => {
+                                 // Build page buttons: ensure consecutive pages from start to end (no gaps)
+                                 // Always include ALL pages from start to end - no skipping, no gaps
+                                 const pagesToShow = [];
+-                                
++
+                                 // CRITICAL: Add ALL consecutive pages from start to end, no exceptions
+                                 // This ensures no gaps like 6 ... 8 (missing 7)
+                                 for (let i = start; i <= end; i++) {
+@@ -2219,17 +2219,17 @@ const SalesRetailInvoice = () => {
+                                         pagesToShow.push(i);
+                                     }
+                                 }
+-                                
++
+                                 // Ensure current page is included (should already be, but double-check)
+                                 if (currentPage >= 1 && currentPage <= effectiveTotalPages) {
+                                     if (!pagesToShow.includes(currentPage)) {
+                                         pagesToShow.push(currentPage);
+                                     }
+                                 }
+-                                
++
+                                 // Sort to ensure order (should already be sorted, but be safe)
+                                 pagesToShow.sort((a, b) => a - b);
+-                                
++
+                                 // Render page buttons - render ALL pages in pagesToShow consecutively
+                                 // No ellipsis logic here - ellipsis only before/after this block
+                                 for (const pageNum of pagesToShow) {
+@@ -2357,87 +2357,87 @@ const SalesRetailInvoice = () => {
+                             {/* Left: Voucher Invoice preview */}
+                             <div ref={voucherInvoicePrintRef} className="flex-1 flex flex-col min-h-[70vh] bg-white rounded-xl border border-primary p-6 shadow-sm print:shadow-none">
+                                 <div className="flex-1">
+-                                <div className="flex flex-row items-start justify-between">
+-                                    <div className="flex flex-row items-center gap-2">
+-                                        <span className="text-primary font-bold text-xl">Voucher Invoice</span>
+-                                        <Icon icon="mdi:refresh" className="text-primary size-5 cursor-pointer" onClick={fetchVouchers} />
+-                                    </div>
+-                                    <img src={logo} alt="Logo" className="w-16 object-contain" />
+-                                </div>
+-                                <div className="text-xs text-black/70 mt-1">
+-                                    <p className="font-semibold uppercase">SPARKLE OUTLET {localStorage.getItem("selectedBranchName") || "PANADURA"}</p>
+-                                    <p>NO 489/C, PANADURA</p>
+-                                    <p>0715522633</p>
+-                                </div>
+-                                <div className="flex flex-row gap-x-5 mt-2 text-sm">
+-                                    <div className="flex flex-row gap-x-2">
+-                                        <p className="font-semibold">Printed Date:</p>
+-                                        <p>{new Date().toISOString().split("T")[0]}</p>
++                                    <div className="flex flex-row items-start justify-between">
++                                        <div className="flex flex-row items-center gap-2">
++                                            <span className="text-primary font-bold text-xl">Voucher Invoice</span>
++                                            <Icon icon="mdi:refresh" className="text-primary size-5 cursor-pointer" onClick={fetchVouchers} />
++                                        </div>
++                                        <img src={logo} alt="Logo" className="w-16 object-contain" />
+                                     </div>
+-                                    <div className="flex flex-row gap-x-2">
+-                                        <p className="font-semibold">Time:</p>
+-                                        <p>{new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</p>
++                                    <div className="text-xs text-black/70 mt-1">
++                                        <p className="font-semibold uppercase">SPARKLE OUTLET {localStorage.getItem("selectedBranchName") || "PANADURA"}</p>
++                                        <p>NO 489/C, PANADURA</p>
++                                        <p>0715522633</p>
+                                     </div>
+-                                </div>
+-                                <h1 className="font-bold text-center text-2xl my-4">INVOICE</h1>
+-                                <div className="border border-black/20 grid grid-cols-2 gap-x-3 p-2 text-sm max-w-md w-fit">
+-                                    <p className="font-semibold">INVOICE NO:</p>
+-                                    <p>{voucherInvoiceNo}</p>
+-                                    <p className="font-semibold">CUSTOMER ID:</p>
+-                                    <p>{voucherSellCustomer?.customer_id ?? "ΓÇö"}</p>
+-                                    <p className="font-semibold">CUSTOMER NAME:</p>
+-                                    <p className="uppercase">{voucherSellCustomer?.customer_name ?? "ΓÇö"}</p>
+-                                    <p className="font-semibold">PHONE NO:</p>
+-                                    <p>{voucherSellCustomer?.phone_number ?? "ΓÇö"}</p>
+-                                </div>
+-                                <p className="font-semibold mt-4 mb-1 text-sm">ITEMS READY:</p>
+-                                <table className="w-full border border-black/20 text-sm">
+-                                    <thead>
+-                                        <tr className="border-b border-black/20 bg-primary/10">
+-                                            <th className="border-r border-black/20 py-1 px-2 text-left">VOUCHER CODE</th>
+-                                            <th className="border-r border-black/20 py-1 px-2">ISSUED DATE</th>
+-                                            <th className="border-r border-black/20 py-1 px-2">EXPIRE DATE</th>
+-                                            <th className="border-r border-black/20 py-1 px-2">VALIDITY PERIOD</th>
+-                                            <th className="py-1 px-2">VALUE</th>
+-                                        </tr>
+-                                    </thead>
+-                                    <tbody>
+-                                        {vouchersAddedToSell.map((v, i) => (
+-                                            <tr key={i} className="border-b border-black/10">
+-                                                <td className="border-r border-black/20 py-1 px-2">{v.voucher_code}</td>
+-                                                <td className="border-r border-black/20 py-1 px-2 text-center">{voucherSellIssuedDate || (v.issued_date ? new Date(v.issued_date).toISOString().split("T")[0] : "ΓÇö")}</td>
+-                                                <td className="border-r border-black/20 py-1 px-2 text-center">{v.expire_date ? new Date(v.expire_date).toISOString().split("T")[0] : "ΓÇö"}</td>
+-                                                <td className="border-r border-black/20 py-1 px-2 text-center">{v.validity_period != null && v.validity_period !== "" ? (typeof v.validity_period === "number" ? `${v.validity_period} DAYS` : v.validity_period) : "ΓÇö"}</td>
+-                                                <td className="py-1 px-2 text-right">Rs {Number(v.value).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+-                                            </tr>
+-                                        ))}
+-                                    </tbody>
+-                                </table>
+-                                <div className="border border-black/20 mt-3 p-2 text-sm space-y-1">
+-                                    <div className="flex flex-row justify-between">
+-                                        <span className="font-semibold">Total Amount</span>
+-                                        <span>Rs {vouchersAddedToSell.reduce((s, v) => s + (Number(v.value) || 0), 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
++                                    <div className="flex flex-row gap-x-5 mt-2 text-sm">
++                                        <div className="flex flex-row gap-x-2">
++                                            <p className="font-semibold">Printed Date:</p>
++                                            <p>{new Date().toISOString().split("T")[0]}</p>
++                                        </div>
++                                        <div className="flex flex-row gap-x-2">
++                                            <p className="font-semibold">Time:</p>
++                                            <p>{new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</p>
++                                        </div>
+                                     </div>
+-                                    <div className="flex flex-row justify-between">
+-                                        <span className="font-semibold">Cash Received</span>
+-                                        <span>Rs {vouchersAddedToSell.reduce((s, v) => s + (Number(v.value) || 0), 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
++                                    <h1 className="font-bold text-center text-2xl my-4">INVOICE</h1>
++                                    <div className="border border-black/20 grid grid-cols-2 gap-x-3 p-2 text-sm max-w-md w-fit">
++                                        <p className="font-semibold">INVOICE NO:</p>
++                                        <p>{voucherInvoiceNo}</p>
++                                        <p className="font-semibold">CUSTOMER ID:</p>
++                                        <p>{voucherSellCustomer?.customer_id ?? "ΓÇö"}</p>
++                                        <p className="font-semibold">CUSTOMER NAME:</p>
++                                        <p className="uppercase">{voucherSellCustomer?.customer_name ?? "ΓÇö"}</p>
++                                        <p className="font-semibold">PHONE NO:</p>
++                                        <p>{voucherSellCustomer?.phone_number ?? "ΓÇö"}</p>
+                                     </div>
+-                                    <div className="flex flex-row justify-between">
+-                                        <span className="font-semibold">Payment Method</span>
+-                                        <span>{voucherSellPaymentMethod}</span>
++                                    <p className="font-semibold mt-4 mb-1 text-sm">ITEMS READY:</p>
++                                    <table className="w-full border border-black/20 text-sm">
++                                        <thead>
++                                            <tr className="border-b border-black/20 bg-primary/10">
++                                                <th className="border-r border-black/20 py-1 px-2 text-left">VOUCHER CODE</th>
++                                                <th className="border-r border-black/20 py-1 px-2">ISSUED DATE</th>
++                                                <th className="border-r border-black/20 py-1 px-2">EXPIRE DATE</th>
++                                                <th className="border-r border-black/20 py-1 px-2">VALIDITY PERIOD</th>
++                                                <th className="py-1 px-2">VALUE</th>
++                                            </tr>
++                                        </thead>
++                                        <tbody>
++                                            {vouchersAddedToSell.map((v, i) => (
++                                                <tr key={i} className="border-b border-black/10">
++                                                    <td className="border-r border-black/20 py-1 px-2">{v.voucher_code}</td>
++                                                    <td className="border-r border-black/20 py-1 px-2 text-center">{voucherSellIssuedDate || (v.issued_date ? new Date(v.issued_date).toISOString().split("T")[0] : "ΓÇö")}</td>
++                                                    <td className="border-r border-black/20 py-1 px-2 text-center">{v.expire_date ? new Date(v.expire_date).toISOString().split("T")[0] : "ΓÇö"}</td>
++                                                    <td className="border-r border-black/20 py-1 px-2 text-center">{v.validity_period != null && v.validity_period !== "" ? (typeof v.validity_period === "number" ? `${v.validity_period} DAYS` : v.validity_period) : "ΓÇö"}</td>
++                                                    <td className="py-1 px-2 text-right">Rs {Number(v.value).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
++                                                </tr>
++                                            ))}
++                                        </tbody>
++                                    </table>
++                                    <div className="border border-black/20 mt-3 p-2 text-sm space-y-1">
++                                        <div className="flex flex-row justify-between">
++                                            <span className="font-semibold">Total Amount</span>
++                                            <span>Rs {vouchersAddedToSell.reduce((s, v) => s + (Number(v.value) || 0), 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
++                                        </div>
++                                        <div className="flex flex-row justify-between">
++                                            <span className="font-semibold">Cash Received</span>
++                                            <span>Rs {vouchersAddedToSell.reduce((s, v) => s + (Number(v.value) || 0), 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
++                                        </div>
++                                        <div className="flex flex-row justify-between">
++                                            <span className="font-semibold">Payment Method</span>
++                                            <span>{voucherSellPaymentMethod}</span>
++                                        </div>
++                                        <div className="flex flex-row justify-between">
++                                            <span className="font-semibold">Balance</span>
++                                            <span>Rs 0.00</span>
++                                        </div>
+                                     </div>
+-                                    <div className="flex flex-row justify-between">
+-                                        <span className="font-semibold">Balance</span>
+-                                        <span>Rs 0.00</span>
++                                    <div className="mt-3 text-sm">
++                                        <p className="font-semibold">NOTES:</p>
++                                        <p className="text-black/70 min-h-[1.5rem]">{voucherSellNotes || ""}</p>
++                                        <p className="font-semibold mt-2">TERMS & CONDITIONS:</p>
++                                        <p className="text-black/70 min-h-[1.5rem]">{voucherSellTerms || ""}</p>
+                                     </div>
+                                 </div>
+-                                <div className="mt-3 text-sm">
+-                                    <p className="font-semibold">NOTES:</p>
+-                                    <p className="text-black/70 min-h-[1.5rem]">{voucherSellNotes || ""}</p>
+-                                    <p className="font-semibold mt-2">TERMS & CONDITIONS:</p>
+-                                    <p className="text-black/70 min-h-[1.5rem]">{voucherSellTerms || ""}</p>
+-                                </div>
+-                                </div>
+                                 <div className="mt-auto pt-4">
+                                     <p className="text-xs text-center text-black/60">"THIS IS SYSTEM GENERATED"</p>
+                                     <div className="text-xs text-center mt-2 text-black/70 pt-2">
+diff --git a/src/pages/retail/invoice/SalesRetailGenerateInvoice.jsx b/src/pages/retail/invoice/SalesRetailGenerateInvoice.jsx
+index bb70bc9..eb672dd 100644
+--- a/src/pages/retail/invoice/SalesRetailGenerateInvoice.jsx
++++ b/src/pages/retail/invoice/SalesRetailGenerateInvoice.jsx
+@@ -9,7 +9,7 @@ import { getAllItemTypes, getAllSettings } from "../../../services/Retail/Retail
+ import { getAllRetailDiscounts } from "../../../services/Retail/RetailDiscountServices";
+ import { getAllRetailVouchers } from "../../../services/Retail/RetailVoucherServices";
+ import { createRetailInvoice, getAllRetailPendingInvoices, getServiceItemsByOrderId } from "../../../services/Retail/RetailInvoiceServices";
+-import { getAllBranches, getRetailOrderById } from "../../../services/Retail/RetailOrderServices";
++import { getAllBranches } from "../../../services/Retail/RetailOrderServices";
+ import { BeatLoader } from "react-spinners";
+ import RetailRedeemVoucherDialog from "../../../components/dialogs/retail/RetailRedeemVoucherDialog";
+ import { getCustomerById } from "../../../services/CustomerServices";
+@@ -290,30 +290,8 @@ const SalesRetailGenerateInvoice = () => {
+                 const orderIdsFromState = ordersFromState.map((o) => o.order_id);
+                 const idsMatchOrders = ids.length > 0 && ids.every((i) => orderIdsFromState.some((oid) => String(oid) === String(i)));
+                 if (idsMatchOrders) {
+-                    // Enrich orders from state to ensure items are complete
+-                    const enrichedOrdersFromState = await Promise.all(ordersFromState.map(async (o) => {
+-                        try {
+-                            const orderId = o.order_id;
+-                            if (orderId && userId) {
+-                                const fullOrderResponse = await getRetailOrderById({ user_id: userId, order_id: orderId });
+-                                const fullOrder = fullOrderResponse?.order;
+-                                if (fullOrder && Array.isArray(fullOrder.items) && fullOrder.items.length > 0) {
+-                                    const hasCompleteItems = fullOrder.items.some(item => item.service_type_id != null);
+-                                    if (hasCompleteItems) {
+-                                        return {
+-                                            ...o,
+-                                            ...fullOrder,
+-                                            items: fullOrder.items
+-                                        };
+-                                    }
+-                                }
+-                            }
+-                        } catch (err) {
+-                            console.warn(`Failed to enrich order from state ${o.order_id}:`, err);
+-                        }
+-                        return o;
+-                    }));
+-                    const merged = mergeOrders(enrichedOrdersFromState);
++                    // Use items directly from the pending-invoice API response (ordersFromState already has items)
++                    const merged = mergeOrders(ordersFromState);
+                     if (merged) {
+                         setInvoice(merged);
+                         await applyMergedOrderToState(merged);
+@@ -348,34 +326,8 @@ const SalesRetailGenerateInvoice = () => {
+                 }
+             }
+ 
+-            // Enrich orders with full order details to ensure items have all necessary fields
+-            // This fixes the issue where orders fetched without loading first have incomplete items
+-            const enrichedOrders = await Promise.all(order.map(async (o) => {
+-                try {
+-                    const orderId = o.order_id;
+-                    if (orderId) {
+-                        const fullOrderResponse = await getRetailOrderById({ user_id: userId, order_id: orderId });
+-                        const fullOrder = fullOrderResponse?.order;
+-                        if (fullOrder && Array.isArray(fullOrder.items) && fullOrder.items.length > 0) {
+-                            // Check if items have service_type_id and other necessary fields
+-                            const hasCompleteItems = fullOrder.items.some(item => item.service_type_id != null);
+-                            if (hasCompleteItems) {
+-                                // Use full order data with complete items
+-                                return {
+-                                    ...o,
+-                                    ...fullOrder,
+-                                    items: fullOrder.items
+-                                };
+-                            }
+-                        }
+-                    }
+-                } catch (err) {
+-                    console.warn(`Failed to enrich order ${o.order_id} in invoice generation:`, err);
+-                }
+-                return o;
+-            }));
+-
+-            const mergedOrder = mergeOrders(enrichedOrders);
++            // Use items directly from the pending-invoice API response (no secondary fetch needed)
++            const mergedOrder = mergeOrders(order);
+             setInvoice(mergedOrder);
+ 
+             if (!mergedOrder) {
+@@ -1034,26 +986,30 @@ const SalesRetailGenerateInvoice = () => {
+ 
+     const handleCreate = async () => {
+         // Use same grouping as RetailInvoice (first occurrence only) so amount due matches the bill
+-        const formattedItems = Object.values(
+-            (invoice?.items || []).reduce((acc, item) => {
+-                const key = `${item.item_type_id}|${item.remark}|${item.color}|${item.brand}|${item.packing_option}|${item.price}|${item.service_type_id}`;
++        // The backend expands items (qty N becomes N rows), sharing the same item_id.
++        // Group by item_id to recover exactly the original order entry rows.
++        const uniqueItemsById = [];
++        const seenItemIds = new Set();
++
++        (invoice?.items || []).forEach((item) => {
++            const idKey = item.item_id || `${item.item_type_id}|${item.remark}|${item.color}|${item.brand}|${item.packing_option}|${item.price}|${item.service_type_id}`;
++
++            if (!seenItemIds.has(idKey)) {
++                seenItemIds.add(idKey);
+                 const qty = Number(item.quantity) ?? Number(item.qty) ?? 1;
+                 const isItemDamaged = item.is_damaged === 1 || item.is_damaged === true || Number(item.is_damaged) === 1 || item.isDamaged === true || Number(item.damaged) === 1;
+                 const isReturned = item.is_returned === 1 || item.is_returned === true || Number(item.is_returned) === 1;
+                 const returnedQty = (item.returned_quantity != null && Number(item.returned_quantity) >= 0) ? Math.min(Number(item.returned_quantity), qty) : (isReturned ? 1 : 0);
+ 
+-                if (!acc[key]) {
+-                    acc[key] = {
+-                        ...item,
+-                        quantity: qty,
+-                        damaged_quantity: isItemDamaged ? qty : 0,
+-                        returned_quantity: returnedQty
+-                    };
+-                }
+-
+-                return acc;
+-            }, {})
+-        );
++                uniqueItemsById.push({
++                    ...item,
++                    quantity: qty,
++                    damaged_quantity: isItemDamaged ? qty : 0,
++                    returned_quantity: returnedQty
++                });
++            }
++        });
++        const formattedItems = uniqueItemsById;
+ 
+         // Calculate total excluding both damaged AND returned items (same as RetailInvoice and bill preview)
+         const deliveryCharge = Number(formData?.delivery_charge) || 0;
+diff --git a/src/pages/retail/orderEntry/RetailUpdateOrder.jsx b/src/pages/retail/orderEntry/RetailUpdateOrder.jsx
+index 99791d4..10b8833 100644
+--- a/src/pages/retail/orderEntry/RetailUpdateOrder.jsx
++++ b/src/pages/retail/orderEntry/RetailUpdateOrder.jsx
+@@ -12,7 +12,7 @@ import { useReactToPrint } from "react-to-print";
+ import { getAllCustomers, getCustomerById } from "../../../services/CustomerServices";
+ import { getAllItemTypes, getAllPriceLists, getAllSettings } from "../../../services/Retail/RetailSettingsServices";
+ import { getAllServiceTypes } from "../../../services/ServiceTypeServices";
+-import { createRetailOrder, getRetailOrderById, updateRetailOrder } from "../../../services/Retail/RetailOrderServices";
++import { createRetailOrder, getRetailOrderByIdToEdit, updateRetailOrder } from "../../../services/Retail/RetailOrderServices";
+ import { BeatLoader } from "react-spinners";
+ import { useHotkeys } from "react-hotkeys-hook";
+ import { ImCheckboxChecked, ImCheckboxUnchecked } from "react-icons/im";
+@@ -189,7 +189,7 @@ const RetailUpdateOrder = () => {
+                 order_id: id
+             };
+ 
+-            const response = await getRetailOrderById(payload);
++            const response = await getRetailOrderByIdToEdit(payload);
+ 
+             if (response) {
+                 const order = response.order || response.data?.order || response;
+@@ -1046,11 +1046,11 @@ const RetailUpdateOrder = () => {
+             if (response) {
+                 // Use created_at from response items as updated_at (represents when order was updated)
+                 // All items should have the same created_at timestamp from the update
+-                const updatedAt = response.items && response.items.length > 0 
+-                    ? response.items[0].created_at 
++                const updatedAt = response.items && response.items.length > 0
++                    ? response.items[0].created_at
+                     : (response.order?.created_at || response.created_at || null);
+                 const updatedByRole = response.order?.updated_by_role || (isAdmin ? userRole : null);
+-                
++
+                 // Update formData with updated_at (from API items created_at) and updated_by_role
+                 if (updatedAt) {
+                     setFormData(prev => ({
+@@ -1479,8 +1479,8 @@ const RetailUpdateOrder = () => {
+                                 <RetailSalesOrder
+                                     ref={salesOrderRef}
+                                     orderItems={orders}
+-                                    data={{ 
+-                                        ...formData, 
++                                    data={{
++                                        ...formData,
+                                         advance_payment: totalPaidDisplay,
+                                         updated_at: formData.updated_at || (orderJustUpdated && isAdmin ? new Date().toISOString() : null),
+                                         updated_by_role: formData.updated_by_role || (orderJustUpdated && isAdmin ? userRole : null)
+diff --git a/src/services/Retail/RetailOrderServices.jsx b/src/services/Retail/RetailOrderServices.jsx
+index 3b153e2..fc87f49 100644
+--- a/src/services/Retail/RetailOrderServices.jsx
++++ b/src/services/Retail/RetailOrderServices.jsx
+@@ -49,6 +49,18 @@ export async function getRetailOrderById(payload) {
+     return undefined;
+ };
+ 
++export async function getRetailOrderByIdToEdit(payload) {
++    const response = await axios.post(`${API_BASE_URL}/order/get-order-by-id-to-edit`, payload);
++
++    console.log("getRetailOrderByIdToEdit response", response);
++
++    if (response && response.status === 200) {
++        return response.data;
++    }
++    console.error("Error fetching retail order for edit");
++    return undefined;
++};
++
+ /** Dispatch note search: use this URL for outlet dispatch note search. */
+ export const SEARCH_ORDER_BY_ID_DISPATCH_URL = (import.meta.env.VITE_ORDER_SEARCH_API || "").trim() || (API_BASE_URL ? `${API_BASE_URL.replace(/\/$/, "")}/order/search-order-by-id` : "");
+ 
+@@ -207,7 +219,7 @@ export async function createRetailOrder(payload) {
+     console.log("Branch ID:", body.branch_id);
+     console.log("Delivery Outlet:", body.delivery_outlet);
+     console.log("Full Payload:", JSON.stringify(body, null, 2));
+-    
++
+     try {
+         const response = await axios.post(`${API_BASE_URL}/order/create-order`, body);
+ 
+@@ -265,7 +277,7 @@ export async function deactivateRetailOrder(payload) {
+ export async function getAllOrdersByCustomerId(payload) {
+     try {
+         const response = await axios.post(`${API_BASE_URL}/order/get-all-orders-by-customer-id`, payload);
+-        
++
+         if (response && response.status === 200) {
+             return response.data;
+         } else {

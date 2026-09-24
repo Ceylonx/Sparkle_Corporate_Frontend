@@ -1,0 +1,19 @@
+[
+  "row_id",
+  "item_type",
+  "express_washing_price",
+  "one_day_washing_price",
+  "normal_washing_price",
+  "express_pressing_price",
+  "one_day_pressing_price",
+  "normal_pressing_price",
+  "express_dry_clean_price",
+  "one_day_dry_clean_price",
+  "normal_dry_clean_price",
+  "urgent_washing_price",
+  "urgent_pressing_price",
+  "urgent_dry_clean_price",
+  "two_day_washing_price",
+  "two_day_pressing_price",
+  "two_day_dry_clean_price"
+]

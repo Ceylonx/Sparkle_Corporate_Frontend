@@ -1,0 +1,140 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+@import "tailwindcss";
+
+:root {
+  font-family: 'Inter', 'Smooch Sans', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-size: clamp(13px, 0.9vw + 0.2rem, 15px);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+input::-ms-reveal {
+  display: none;
+}
+
+@theme {
+  --color-primary: #1470F9;
+  --color-canvas: #F7F7F7;
+  --aspect-print: 1.42 / 1;
+  --aspect-print-a4: 1 / 1.4;
+  --text-xxs: 0.625rem; /* 10px */
+  --gridTemplateColumns--16: 'repeat(16, minmax(0, 1fr))';
+}
+
+@media print {
+  .a4-print { size: A4 portrait; }
+  .a5-print { size: A5 landscape; }
+
+  /* No fixed height - content starts at top of page 1; footer fixed to page bottom */
+  .print-page-fixed-footer {
+    min-height: 0 !important;
+    height: auto !important;
+    display: flex !important;
+    flex-direction: column !important;
+    box-sizing: border-box;
+    page-break-after: always;
+  }
+  .print-page-fixed-footer:last-child {
+    page-break-after: auto;
+  }
+  .print-body-fixed {
+    flex: 0 0 auto !important;
+    min-height: 0 !important;
+    padding-bottom: 70px !important; /* reduced space for fixed footer */
+  }
+  /* Tighter line spacing in print so more fits on one page */
+  .print-compact,
+  .print-compact p {
+    line-height: 1.1 !important;
+    margin-bottom: 0.1rem !important;
+  }
+  .print-body-fixed .text-xs p {
+    line-height: 1.15;
+  }
+  /* Keep summary + NOTES + Terms on same page: no break before/inside */
+  .print-summary-notes-wrapper {
+    page-break-inside: avoid !important;
+    page-break-before: avoid !important;
+    margin-top: 0.25rem !important;
+  }
+  /* Tighter summary block in print to save space */
+  .print-summary-block {
+    font-size: 0.7rem !important;
+    line-height: 1.15 !important;
+    row-gap: 0 !important;
+    column-gap: 1rem !important; /* gap between summary (left) and payment (right) parts */
+  }
+  .print-summary-block .flex.flex-row {
+    margin-bottom: 0.02rem !important;
+    padding-top: 0 !important;
+    padding-bottom: 0 !important;
+    min-height: 0 !important;
+  }
+  .print-summary-block .flex.flex-row p {
+    margin: 0 !important;
+    line-height: 1.1 !important;
+  }
+  .print-summary-block .flex.flex-col > .flex.flex-col {
+    gap: 0 !important;
+  }
+  /* Keep NOTES + Terms compact on same page */
+  .print-notes-terms-block {
+    page-break-inside: avoid !important;
+    page-break-before: avoid !important;
+    font-size: 0.6rem !important;
+    line-height: 1.1 !important;
+    margin-top: 0.1rem !important;
+    padding-top: 0 !important;
+  }
+  .print-notes-terms-block p {
+    margin-bottom: 0.05rem !important;
+    line-height: 1.1 !important;
+  }
+  /* Footer fixed at bottom of printed page so it stays on same page as content */
+  .print-footer-fixed {
+    position: fixed !important;
+    bottom: 2px !important;
+    left: 0 !important;
+    right: 0 !important;
+    flex-shrink: 0 !important;
+    padding-top: 2px;
+    padding-left: 12px;
+    padding-right: 12px;
+    page-break-before: avoid;
+    font-size: 0.55rem !important;
+    line-height: 1.15 !important;
+  }
+  /* Compact table rows for A5 printing */
+  .a5-print table {
+    font-size: 0.65rem !important;
+  }
+  .a5-print table th,
+  .a5-print table td {
+    padding: 2px 3px !important;
+    line-height: 1.15 !important;
+  }
+  .a5-print table thead th {
+    font-size: 0.6rem !important;
+  }
+  /* Compact header section */
+  .a5-print .text-xxs {
+    font-size: 0.55rem !important;
+  }
+  .a5-print .text-xs {
+    font-size: 0.65rem !important;
+  }
+}
+
+button {
+  cursor: pointer;
+}
+
+/* Slightly increase weight and darkness for muted/gray text utilities */
+.text-black\/50 { color: rgba(0,0,0,0.55) !important; font-weight: 600; }
+.text-black\/60 { color: rgba(0,0,0,0.65) !important; font-weight: 600; }
+.text-black\/70 { color: rgba(0,0,0,0.75) !important; font-weight: 600; }
+.text-black\/80 { color: rgba(0,0,0,0.85) !important; font-weight: 600; }
+
+
