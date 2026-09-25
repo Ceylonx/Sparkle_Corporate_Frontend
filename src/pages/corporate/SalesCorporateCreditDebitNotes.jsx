@@ -19,7 +19,8 @@ import {
 import CorporateInvoicePreview from "./invoicing/CorporateInvoicePreview";
 import { pickCorporateTaxRatePercent, buildCollectionNoteLinesFromApiOrderItems } from "../../utils/corporateCollectionNotePricing";
 import { computeSsclVatFromBase } from "../../utils/corporateTaxInvoiceMath";
-import { getAllCorporateCustomers, getCustomerById } from "../../services/CustomerServices";
+import { computeInvoiceAmountFromItems } from "../../utils/corporateInvoiceListAmount";
+import { getAllCorporateCustomers, getCustomerById, getCorporateCustomerById, unwrapCorporateCustomerGetByIdResponse } from "../../services/CustomerServices";
 import { getAllCorporateSettings, getCorporatePriceListByCustomer, getAllCorporateItems } from "../../services/corporate/CorporateSettingsServices";
 
 // Same normalization CorporatePeriodInvoicePreview.jsx uses so item_type_id/corp_item_id line up
@@ -696,11 +697,57 @@ export default function SalesCorporateCreditDebitNotes() {
     // invoice that's since been cleared or replaced can't repopulate the form.
     const invoiceSelectRequestRef = useRef(0);
 
+    // The linked invoice's Amount exactly as the Daily/Period invoice lists show it (and as its
+    // bill totals it, incl. Urgent surcharges). Neither the stored total_amount (overwritten by the
+    // backend's own tax recalculation) nor the invoice-preview's order items (aggregated across
+    // every delivery note, one invoice-wide delivery type, no customer service types) reproduce
+    // it — so this reuses the lists' own source: the customer's invoicing history row + corporate
+    // customer profile, priced by the same computeInvoiceAmountFromItems. null = not resolved.
+    const [linkedInvoiceListAmount, setLinkedInvoiceListAmount] = useState(null);
+
+    // Priced from the invoice-preview's own stored invoice fields — sub_total (laundry charges,
+    // already incl. Urgent surcharge), discount, transport_charge — with SSCL/VAT added for a
+    // customer with a VAT number, exactly as the Daily/Period invoice lists do. items: [] makes
+    // computeInvoiceAmountFromItems use sub_total rather than re-pricing the invoice-preview's
+    // order items (aggregated across every delivery note, so they'd give the wrong figure).
+    // The customer profile (VAT no., locations) comes from get-corporate-customer-by-id, same as
+    // the lists. (The invoicing-history endpoint isn't keyed by customer_auto_id and returns no
+    // rows here, so it isn't used.)
+    const fetchLinkedInvoiceListAmount = async (invoiceData, customerAutoId, requestId) => {
+        const LOG = "[LinkedInvoiceAmount]"; // TEMP DEBUG — remove once confirmed
+        if (!invoiceData || customerAutoId == null || customerAutoId === "") {
+            console.warn(LOG, "skipped: missing invoice or customer_auto_id — using stored amount", { customerAutoId });
+            return;
+        }
+        try {
+            const profileRes = await getCorporateCustomerById({
+                user_id: localStorage.getItem("userId") || "",
+                customer_auto_id: customerAutoId,
+            });
+            if (requestId !== invoiceSelectRequestRef.current) return;
+            const profile = unwrapCorporateCustomerGetByIdResponse(profileRes);
+            const isPeriod = /period/i.test(String(invoiceData.invoicing_type || ""));
+            const amount = computeInvoiceAmountFromItems({ ...invoiceData, items: [] }, profile, { isPeriod });
+            console.log(LOG, "computed", amount, {
+                isPeriod,
+                sub_total: invoiceData.sub_total,
+                discount: invoiceData.discount,
+                transport_charge: invoiceData.transport_charge,
+                customer_vat_number: profile?.customer_vat_number,
+                stored_total_amount: invoiceData.total_amount,
+            });
+            if (Number.isFinite(amount) && amount > 0) setLinkedInvoiceListAmount(amount);
+        } catch (err) {
+            console.error(LOG, "failed — using stored amount:", err);
+        }
+    };
+
     // Undo a wrongly picked Linked Invoice — keeps the selected customer, drops everything loaded
     // for that invoice. "Change Invoice Items" needs an invoice, so fall back to manual entry.
     const handleClearSelectedInvoice = () => {
         invoiceSelectRequestRef.current += 1;
         setSelectedInvoice(null);
+        setLinkedInvoiceListAmount(null);
         setInvoicePreviewData(null);
         setIsInvoicePreviewLoading(false);
         setAdjustedQuantities({});
@@ -719,6 +766,7 @@ export default function SalesCorporateCreditDebitNotes() {
     const handleSelectInvoice = async (inv, { excludeNoteId = editingNote?.id } = {}) => {
         const requestId = ++invoiceSelectRequestRef.current;
         setSelectedInvoice(inv);
+        setLinkedInvoiceListAmount(null);
         // Keep "Select Customer" in sync when an invoice is picked directly (e.g. under "All Customers")
         const matchedCustomer = corporateCustomers.find((c) => String(c.customer_id) === String(inv.customer_id));
         // Skip the refetch when it's already the selected customer (keeps its fetched details).
@@ -736,6 +784,11 @@ export default function SalesCorporateCreditDebitNotes() {
             if (requestId !== invoiceSelectRequestRef.current) return;
             if (res?.success) {
                 setInvoicePreviewData(res);
+                // Amount as the Daily/Period invoice list shows it (see linkedInvoiceListAmount).
+                const customerAutoIdForAmount =
+                    res.customer?.customer_auto_id ??
+                    corporateCustomers.find((c) => String(c.customer_id) === String(res.invoice?.customer_id ?? inv.customer_id))?.customer_auto_id;
+                fetchLinkedInvoiceListAmount(res.invoice, customerAutoIdForAmount, requestId);
                 const items = res.items || [];
                 const initialAdjusted = {};
 
@@ -2179,7 +2232,25 @@ export default function SalesCorporateCreditDebitNotes() {
                             // derived from total_amount - balance_due, which can disagree with it
                             // (balance_due gets adjusted by things paid_amount doesn't reflect).
                             const paidAmount = Number(linkedInvoice?.paid_amount || 0);
-                            const balanceAfterCredit = Math.max(0, Number(linkedInvoice?.total_amount || 0) - paidAmount - totalCreditAmount);
+                            // The invoice's real bill total. cash_amount holds the grand total exactly
+                            // as the invoice bill computed it; total_amount does NOT — the backend
+                            // overwrites it at generation with its own recalculation, which re-adds
+                            // SSCL/VAT on top of tax-inclusive (e.g. Urgent) line rates. Same field
+                            // priority as Customer Payment's getInvoiceGrossTotal.
+                            // Preferred: the amount exactly as the Daily/Period invoice list shows it
+                            // (linkedInvoiceListAmount); the stored fields below are only a fallback
+                            // while it loads or if it can't be resolved.
+                            const invoiceAmount = linkedInvoiceListAmount ?? (Number(
+                                linkedInvoice?.grand_total ??
+                                linkedInvoice?.final_grand_total ??
+                                linkedInvoice?.total_amount_including_vat ??
+                                linkedInvoice?.amount_including_vat ??
+                                linkedInvoice?.cash_amount ??
+                                linkedInvoice?.total_amount ??
+                                linkedInvoice?.sub_total ??
+                                0
+                            ) || 0);
+                            const balanceAfterCredit = Math.max(0, invoiceAmount - paidAmount - totalCreditAmount);
                             // The backend's own invoice_status can lag behind (e.g. still says
                             // "Paid" from before a Debit Note added to what's owed) — go by the
                             // balance actually left here instead of trusting that column blindly.
@@ -2203,7 +2274,7 @@ export default function SalesCorporateCreditDebitNotes() {
                                     <div className="grid grid-cols-9 gap-x-2 text-base py-3.5 px-4 bg-white items-center">
                                         <div className="font-semibold text-black/80">{selectedInvoice.invoice_id}</div>
                                         <div className="text-black/70">{invoiceDateDisplay}</div>
-                                        <div className="text-black font-bold">Rs {Number(linkedInvoice?.total_amount || 0).toFixed(2)}</div>
+                                        <div className="text-black font-bold">Rs {invoiceAmount.toFixed(2)}</div>
                                         <div className="text-black/70">Rs {paidAmount.toFixed(2)}</div>
                                         <div className="text-red-500 font-medium">
                                             {totalCreditAmount > 0 ? `- Rs ${totalCreditAmount.toFixed(2)}` : "-"}
