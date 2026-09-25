@@ -1543,6 +1543,11 @@ const SalesCorporateReceivePayment = () => {
                                                 const balanceDue = Array.isArray(receipt?.invoices)
                                                     ? receipt.invoices.reduce((sum, inv) => sum + Number(inv?.balance_due || 0), 0)
                                                     : Number(receipt?.balance_due || 0);
+                                                // Sum of every allocation (invoices + Debit Notes) on this receipt — the
+                                                // receipt's top-level paid_amount can be just its first row's share.
+                                                const paidAmount = Array.isArray(receipt?.invoices) && receipt.invoices.length > 0
+                                                    ? receipt.invoices.reduce((sum, inv) => sum + Number(inv?.payAmount || 0), 0)
+                                                    : Number(receipt?.paid_amount || 0);
                                                 const approvalBadgeClass =
                                                     approvalStatus === "Approved"
                                                         ? "text-green-600 bg-green-50"
@@ -1560,7 +1565,7 @@ const SalesCorporateReceivePayment = () => {
                                                     <td className="py-3 px-2 text-black/80 whitespace-nowrap overflow-hidden text-ellipsis">{receipt?.payment_method || "-"}</td>
                                                     <td className="py-3 px-2 text-right text-black/90 tabular-nums whitespace-nowrap overflow-hidden text-ellipsis">{formatRsFromNumber(receipt?.total_amount)}</td>
                                                     <td className="py-3 px-2 text-right text-black/90 tabular-nums whitespace-nowrap overflow-hidden text-ellipsis">{formatRsFromNumber(creditAmount)}</td>
-                                                    <td className="py-3 px-2 text-right text-black/90 tabular-nums whitespace-nowrap overflow-hidden text-ellipsis">{formatRsFromNumber(receipt?.paid_amount)}</td>
+                                                    <td className="py-3 px-2 text-right text-black/90 tabular-nums whitespace-nowrap overflow-hidden text-ellipsis">{formatRsFromNumber(paidAmount)}</td>
                                                     <td className="py-3 px-2 text-right text-black/90 tabular-nums whitespace-nowrap overflow-hidden text-ellipsis">{formatRsFromNumber(balanceDue)}</td>
                                                     <td className="py-3 px-2 whitespace-nowrap overflow-hidden text-ellipsis">
                                                         <span className={`px-2 py-0.5 rounded-md text-xs font-bold ${approvalBadgeClass}`}>
