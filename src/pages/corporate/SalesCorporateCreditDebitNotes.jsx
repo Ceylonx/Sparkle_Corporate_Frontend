@@ -269,6 +269,9 @@ export default function SalesCorporateCreditDebitNotes() {
     // Non-null while the wizard (isCreating) is being reused to EDIT this existing note instead
     // of creating a new one — holds the original note row (id, approval_status, etc.).
     const [editingNote, setEditingNote] = useState(null);
+    // Real note_no/note_date from the create/update success response — shown on the printable
+    // preview so "Create & Print" prints the actual note number instead of the TEMP placeholder.
+    const [savedNoteHeader, setSavedNoteHeader] = useState(null);
 
     // Corporate settings (Settings > Receipt) — source of truth for the default Terms &
     // Conditions shown across every bill, same as the Invoicing module.
@@ -961,6 +964,12 @@ export default function SalesCorporateCreditDebitNotes() {
                 ? await updateCreditDebitNoteStatus(payload)
                 : await createCreditDebitNote(payload);
             if (result?.success) {
+                // Set before the success alert is awaited, so the preview has re-rendered with
+                // the real number by the time handlePrint runs below.
+                setSavedNoteHeader({
+                    note_no: result.note_no || editingNote?.note_no || null,
+                    note_date: result.note_date || editingNote?.date || null,
+                });
                 await Swal.fire({
                     icon: "success",
                     title: "Success",
@@ -986,6 +995,7 @@ export default function SalesCorporateCreditDebitNotes() {
                     setDiscount("");
                     setSelectedLedgerAccount("");
                     setEditingNote(null);
+                    setSavedNoteHeader(null);
                     setIsCreating(false);
                     setCurrentStep(1);
 
@@ -2444,8 +2454,8 @@ export default function SalesCorporateCreditDebitNotes() {
                                     effectiveDiscountPercent={effectiveDiscountPercent}
                                     isCreditNote={noteType === "Credit Note"}
                                     isDebitNote={noteType === "Debit Note"}
-                                    noteNo="TEMP-0000"
-                                    noteDate={new Date().toISOString().split("T")[0]}
+                                    noteNo={savedNoteHeader?.note_no || editingNote?.note_no || ""}
+                                    noteDate={savedNoteHeader?.note_date || editingNote?.date || new Date().toISOString().split("T")[0]}
                                     noteReason={reason}
                                     adjustedItems={isAdjusted ? adjustedItemsForPreview : null}
                                     manualLaundryCharges={manualLaundryChargesForPreview}

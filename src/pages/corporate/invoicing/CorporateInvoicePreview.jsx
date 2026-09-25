@@ -1153,7 +1153,7 @@ const CorporateInvoicePreview = forwardRef(function CorporateInvoicePreview(
                 <div className="tax-inv-supplier-customer-row flex flex-row justify-between mt-10 md:mt-14 print:mt-10 text-[11px] md:text-[12px] leading-snug print:mt-1 print:text-[9px] print:leading-tight w-full items-start">
                     <div className="tax-inv-info-grid flex flex-col px-3 pt-0 pb-1 w-[52%] md:w-[52%] print:w-[52%] min-w-0 text-neutral-900 text-left -mt-6 md:-mt-8 print:-mt-6" style={{ textTransform: 'none' }}>
                         <div className="font-bold text-[12px] print:text-[10px]">
-                            {isCreditNote ? "Credit Note No" : isDebitNote ? "Debit Note No" : (shouldShowAsTaxInvoice ? "Tax Invoice No" : "Invoice No")} : {isCreditNote || isDebitNote ? (noteNo || "---") : (taxInvoiceNo ? String(taxInvoiceNo) : "---")}
+                            {isCreditNote ? "Credit Note No" : isDebitNote ? "Debit Note No" : (shouldShowAsTaxInvoice ? "Tax Invoice No" : "Invoice No")} : {isCreditNote || isDebitNote ? (noteNo || "") : (taxInvoiceNo ? String(taxInvoiceNo) : "---")}
                         </div>
                         <div className="mt-1.5 font-bold text-[12px] print:text-[10px]">Supplier's Details</div>
                         <div className="text-[11px] print:text-[9px] mt-0.5">VAT NO  : 108812540-7000</div>
