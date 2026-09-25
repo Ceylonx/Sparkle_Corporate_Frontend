@@ -2154,8 +2154,13 @@ export default function SalesCorporateCreditDebitNotes() {
                             // Active (non-cancelled) Credit Notes already issued against this
                             // invoice — netted out of its balance below so Balance reflects what's
                             // actually still owed, same logic Receive Payment's Invoice List uses.
+                            // On a Debit Note, only APPROVED Credit Notes count — a pending
+                            // (Created/Checked) one hasn't actually reduced what the customer owes
+                            // yet. A Credit Note still counts pending ones so the same amount can't
+                            // be credited twice while the first is awaiting approval.
                             const totalCreditAmount = (invoicePreviewData?.creditNotes || [])
                                 .filter((n) => n?.status !== "Deactive")
+                                .filter((n) => noteType !== "Debit Note" || n?.approval_status === "Approved")
                                 .reduce((sum, n) => sum + getNoteDisplayAmount(n), 0);
                             const totalDebitAmount = (
                                 invoicePreviewData?.debitNotes ||
