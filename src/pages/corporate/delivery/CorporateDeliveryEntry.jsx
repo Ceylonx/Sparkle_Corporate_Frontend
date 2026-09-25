@@ -198,6 +198,18 @@ const CorporateDeliveryEntry = () => {
                 delivery_note_id: editNoteId
             });
             const noteDetails = response?.data?.delivery_note;
+            // Reached the edit page directly (URL / back nav) for a note whose invoice already has
+            // a Credit/Debit Note or payment entry — bounce back to its view instead of editing.
+            if (noteDetails?.edit_lock?.locked) {
+                await Swal.fire({
+                    icon: "warning",
+                    title: "Delivery Note Locked",
+                    text: noteDetails.edit_lock.message || "This delivery note's invoice already has credit/debit notes or payments.",
+                    confirmButtonColor: "#1470F9",
+                });
+                navigate(`/salesCorporate/corporate/delivery/note/${noteDetails.delivery_id || editNoteId}`, { replace: true });
+                return;
+            }
             if (noteDetails) {
                 setEditNote(noteDetails);
                 setPreviewDeliveryNoteId(noteDetails.delivery_id || editNoteId);

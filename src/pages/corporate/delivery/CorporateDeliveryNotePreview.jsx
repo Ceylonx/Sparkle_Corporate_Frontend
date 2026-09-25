@@ -54,7 +54,21 @@ const CorporateDeliveryNotePreview = () => {
     const [activityLog, setActivityLog] = useState([]);
     const [showSignatureModal, setShowSignatureModal] = useState(false);
 
+    // Set by get-delivery-note-by-id when the note's invoice already has a Credit/Debit Note or
+    // payment entry — editing delivered quantities then would desync them (backend rejects too).
+    const editLock = note?.edit_lock || null;
+    const isEditLocked = !!editLock?.locked;
+
     const handleEditDeliveryNote = () => {
+        if (isEditLocked) {
+            Swal.fire({
+                icon: "warning",
+                title: "Delivery Note Locked",
+                text: editLock?.message || "This delivery note's invoice already has credit/debit notes or payments.",
+                confirmButtonColor: "#1470F9",
+            });
+            return;
+        }
         navigate(`/salesCorporate/corporate/delivery/entry/${note?.pickup_entry_id}`, {
             state: { edit_note_id: note?.delivery_id }
         });
@@ -428,18 +442,30 @@ const CorporateDeliveryNotePreview = () => {
                 {/* ─── Sidebar: Approval Workflow ─── */}
                 <aside className="px-6 flex flex-col gap-y-6 w-full max-w-[350px]">
 
-                    {/* Edit Delivery Note Button */}
+                    {/* Edit Delivery Note Button — locked once cancelled, or once the note's
+                        invoice has a Credit/Debit Note or payment entry (note.edit_lock). */}
                     <button
-                        disabled={status === 'Deactive'}
+                        disabled={status === 'Deactive' || isEditLocked}
                         onClick={handleEditDeliveryNote}
+                        title={isEditLocked ? editLock?.message || "" : undefined}
                         className={`font-bold py-3 rounded-full text-lg shadow-sm transition-colors w-full ${
-                            status === 'Deactive'
+                            status === 'Deactive' || isEditLocked
                                 ? 'bg-black/10 text-black/40 cursor-not-allowed'
                                 : 'bg-[#E5EFFE] text-[#000000] hover:bg-[#d4e4fd] cursor-pointer flex justify-center items-center'
                         }`}
                     >
-                        {status === 'Deactive' ? '🔒 Cancelled' : 'Edit Delivery Note'}
+                        {status === 'Deactive' ? '🔒 Cancelled' : isEditLocked ? '🔒 Locked' : 'Edit Delivery Note'}
                     </button>
+                    {status !== 'Deactive' && isEditLocked && (
+                        <div className="-mt-3 text-sm text-red-600 bg-red-50 border border-red-200 rounded-xl px-3 py-2">
+                            <p className="font-semibold">Can't edit — invoice {editLock?.invoice_id} has:</p>
+                            <ul className="list-disc list-inside mt-1 break-words">
+                                {(editLock?.reasons || []).map((reason, idx) => (
+                                    <li key={idx}>{reason}</li>
+                                ))}
+                            </ul>
+                        </div>
+                    )}
 
                     {/* Created By */}
                     <div className="flex flex-col gap-y-2 text-[15px]">
