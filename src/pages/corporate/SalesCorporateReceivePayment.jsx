@@ -1039,7 +1039,7 @@ const SalesCorporateReceivePayment = () => {
                                                     minimumFractionDigits: 2,
                                                 })}
                                             </p>
-                                            <p className="text-black/70">-</p>
+                                            <p className="text-black/70">{note.due_date ? new Date(note.due_date).toLocaleDateString() : "-"}</p>
                                             <div>
                                                 {notePaid >= noteAmount && noteAmount > 0 ? (
                                                     <span className="px-2 py-1 bg-green-100 text-green-700 rounded-full text-xs font-medium">Paid</span>

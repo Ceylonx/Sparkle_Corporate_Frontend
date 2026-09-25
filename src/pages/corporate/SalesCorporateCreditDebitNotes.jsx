@@ -640,8 +640,29 @@ export default function SalesCorporateCreditDebitNotes() {
         return undefined;
     }, [isCreating, creationMode, amount, viewingNote]);
 
+    // Bumped on every invoice select/clear so a slow getInvoicePreviewDetails response for an
+    // invoice that's since been cleared or replaced can't repopulate the form.
+    const invoiceSelectRequestRef = useRef(0);
+
+    // Undo a wrongly picked Linked Invoice — keeps the selected customer, drops everything loaded
+    // for that invoice. "Change Invoice Items" needs an invoice, so fall back to manual entry.
+    const handleClearSelectedInvoice = () => {
+        invoiceSelectRequestRef.current += 1;
+        setSelectedInvoice(null);
+        setInvoicePreviewData(null);
+        setIsInvoicePreviewLoading(false);
+        setAdjustedQuantities({});
+        setPreviouslyReturnedQty({});
+        setNotePriceList([]);
+        setNoteItemTypes([]);
+        setInvoiceSearch("");
+        setIsInvoiceDropdownOpen(false);
+        setCreationMode("Enter Amount Manually");
+    };
+
     // Fetch details for adjustment table
     const handleSelectInvoice = async (inv) => {
+        const requestId = ++invoiceSelectRequestRef.current;
         setSelectedInvoice(inv);
         // Keep "Select Customer" in sync when an invoice is picked directly (e.g. under "All Customers")
         const matchedCustomer = corporateCustomers.find((c) => String(c.customer_id) === String(inv.customer_id));
@@ -656,6 +677,7 @@ export default function SalesCorporateCreditDebitNotes() {
         setPreviouslyReturnedQty({});
         try {
             const res = await getInvoicePreviewDetails(inv.invoice_id);
+            if (requestId !== invoiceSelectRequestRef.current) return;
             if (res?.success) {
                 setInvoicePreviewData(res);
                 const items = res.items || [];
@@ -670,6 +692,7 @@ export default function SalesCorporateCreditDebitNotes() {
                     getCorporatePriceListByCustomer({ user_id: userId, customer_id: customerIdForPricing }),
                     getAllCorporateItems(userId),
                 ]).then(([priceRes, itemsRes]) => {
+                    if (requestId !== invoiceSelectRequestRef.current) return;
                     const list =
                         priceRes?.data?.price_list ??
                         priceRes?.data?.corporate_price_lists ??
@@ -735,7 +758,7 @@ export default function SalesCorporateCreditDebitNotes() {
                 confirmButtonColor: "#1470F9"
             });
         } finally {
-            setIsInvoicePreviewLoading(false);
+            if (requestId === invoiceSelectRequestRef.current) setIsInvoicePreviewLoading(false);
         }
     };
 
@@ -1976,7 +1999,22 @@ export default function SalesCorporateCreditDebitNotes() {
                                     <span className="text-base text-black font-medium">
                                         {selectedInvoice ? selectedInvoice.invoice_id : "Select Linked Invoice..."}
                                     </span>
-                                    <Icon icon="mdi:chevron-down" className="text-gray-500 size-5" />
+                                    <div className="flex flex-row items-center gap-x-1 shrink-0">
+                                        {selectedInvoice && (
+                                            <button
+                                                type="button"
+                                                title="Clear selected invoice"
+                                                onClick={(e) => {
+                                                    e.stopPropagation();
+                                                    handleClearSelectedInvoice();
+                                                }}
+                                                className="text-gray-400 hover:text-red-500 cursor-pointer transition-colors flex items-center"
+                                            >
+                                                <Icon icon="material-symbols:close-rounded" className="size-5" />
+                                            </button>
+                                        )}
+                                        <Icon icon="mdi:chevron-down" className="text-gray-500 size-5" />
+                                    </div>
                                 </div>
 
                                 {isInvoiceDropdownOpen && (
