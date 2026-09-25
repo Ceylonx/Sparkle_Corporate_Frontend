@@ -2171,6 +2171,9 @@ export default function SalesCorporateCreditDebitNotes() {
                                 )
                             )
                                 .filter((n) => n?.status !== "Deactive")
+                                // Same rule as Credit Notes above: on a Debit Note, only APPROVED
+                                // Debit Notes count toward the total.
+                                .filter((n) => noteType !== "Debit Note" || n?.approval_status === "Approved")
                                 .reduce((sum, n) => sum + getNoteDisplayAmount(n), 0);
                             // Paid comes straight off the invoice's own paid_amount column — not
                             // derived from total_amount - balance_due, which can disagree with it
