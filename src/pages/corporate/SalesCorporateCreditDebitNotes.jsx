@@ -86,6 +86,29 @@ const getNoteTransportCharge = (note) => {
     );
 };
 
+// Same fallbacks CorporateInvoicePreview's Debit Note summary uses when no invoice tax rates are
+// available (e.g. a standalone Debit Note), so saved/listed totals match the printed note.
+const DEFAULT_SSCL_RATE_PCT = 2.5;
+const DEFAULT_VAT_RATE_PCT = 18;
+
+/** A Debit Note's "Total Amount Including VAT", exactly as its printed preview computes it:
+ *  (amount + transport) with SSCL then VAT on top for VAT-registered customers. Uses the saved
+ *  SSCL/VAT when present; otherwise recomputes them, since older standalone Debit Notes were
+ *  saved with sscl_amount/vat_amount = 0 even for VAT-registered customers. */
+const getDebitNoteGrandTotal = (note, customer) => {
+    const savedSscl = toMoneyNumber(note?.sscl_amount ?? note?.sscl_tax_amount);
+    const savedVat = toMoneyNumber(note?.vat_amount);
+    if (savedSscl > 0 || savedVat > 0) return getNoteDisplayAmount(note);
+
+    const base = toMoneyNumber(toMoneyNumber(note?.amount) + getNoteTransportCharge(note));
+    if (!isVatRegisteredCustomerForNote(null, null, customer)) return base;
+    return computeSsclVatFromBase(
+        base,
+        Number(note?.sscl_rate) || DEFAULT_SSCL_RATE_PCT,
+        Number(note?.vat_rate) || DEFAULT_VAT_RATE_PCT
+    ).grandTotal;
+};
+
 /** Normalizes a note's due_date (Date object, ISO datetime string, or "yyyy-mm-dd") into the
  *  plain "yyyy-mm-dd" a <input type="date"> needs. */
 const toDateInputValue = (value) => {
@@ -325,18 +348,21 @@ export default function SalesCorporateCreditDebitNotes() {
 
     // Transport Charge doesn't apply to Credit Notes — clear it if the user switches note type
     // after having typed one in, so a stale value can't sneak into a Credit Note submission.
+    // Scoped to the create/edit wizard: noteType isn't synced when View opens a saved note
+    // (handleViewNote), so outside the wizard this would wipe a Debit Note's saved Transport
+    // Charge off its preview.
     useEffect(() => {
-        if (noteType === "Credit Note" && transportCharge !== "") {
+        if (isCreating && noteType === "Credit Note" && transportCharge !== "") {
             setTransportCharge("");
         }
-    }, [noteType, transportCharge]);
+    }, [isCreating, noteType, transportCharge]);
 
-    // Due Date is Debit Note only — same reasoning as Transport Charge above.
+    // Due Date is Debit Note only — same reasoning (and same wizard-only scope) as Transport Charge above.
     useEffect(() => {
-        if (noteType === "Credit Note" && dueDate !== "") {
+        if (isCreating && noteType === "Credit Note" && dueDate !== "") {
             setDueDate("");
         }
-    }, [noteType, dueDate]);
+    }, [isCreating, noteType, dueDate]);
 
     // Searchable dropdown state
     const [invoiceSearch, setInvoiceSearch] = useState("");
@@ -516,8 +542,14 @@ export default function SalesCorporateCreditDebitNotes() {
         // preview adds it on top of the credited/debited amount before computing SSCL/VAT), so the
         // submitted totals actually reflect what was typed instead of taxing baseAmount alone.
         const taxableBase = toMoneyNumber(baseAmount + manualTransportCharge);
+        // With no linked invoice (standalone Debit Note) taxRates are 0 — fall back to the same
+        // defaults the printed note uses, so SSCL/VAT aren't saved as 0 for a VAT customer.
         const taxBreakdown = isVatCustomer
-            ? computeSsclVatFromBase(taxableBase, taxRates.sscl, taxRates.vat)
+            ? computeSsclVatFromBase(
+                taxableBase,
+                taxRates.sscl || DEFAULT_SSCL_RATE_PCT,
+                taxRates.vat || DEFAULT_VAT_RATE_PCT
+            )
             : computeSsclVatFromBase(taxableBase, 0, 0);
 
         const payload = {
@@ -2795,7 +2827,13 @@ export default function SalesCorporateCreditDebitNotes() {
                     ) : (
                         currentNotes.map((note, index) => {
                             const status = note.status === "Deactive" ? "Cancelled" : (note.approval_status || "Created");
-                            const displayAmount = getNoteDisplayAmount(note);
+                            // Debit Notes list the same Total Amount Including VAT as their printed note.
+                            const displayAmount = note.type === "Debit Note"
+                                ? getDebitNoteGrandTotal(
+                                    note,
+                                    corporateCustomers.find((c) => String(c.customer_id) === String(note.customer_id))
+                                )
+                                : getNoteDisplayAmount(note);
                             return (
                                 <div
                                     key={note.id}
