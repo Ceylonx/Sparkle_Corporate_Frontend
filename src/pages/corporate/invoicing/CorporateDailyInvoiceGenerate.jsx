@@ -2343,7 +2343,13 @@ const CorporateDailyInvoiceGenerate = ({ cus: propCus, id: propId, onClose } = {
                                         <div className="px-4 py-3 text-black/40 text-sm">No credit/debit notes for this invoice.</div>
                                     ) : (
                                         linkedCreditDebitNotes.map((note, idx) => {
-                                            const status = note.status === "Deactive" ? "Cancelled" : (note.approval_status || "Created");
+                                            // Latest status: cancelled notes keep their old approval_status (e.g. "Checked"), so
+                                                // treat status "Deactive" OR a last activity-log entry of "Cancelled" as Cancelled.
+                                                const noteLog = Array.isArray(note.activity_log)
+                                                    ? note.activity_log
+                                                    : (() => { try { return JSON.parse(note.activity_log || "[]"); } catch { return []; } })();
+                                                const lastLogType = Array.isArray(noteLog) && noteLog.length > 0 ? noteLog[noteLog.length - 1]?.type : null;
+                                                const status = note.status === "Deactive" || lastLogType === "Cancelled" ? "Cancelled" : (note.approval_status || "Created");
                                             return (
                                                 <a
                                                     key={note.id ?? `${note.note_no}-${idx}`}
