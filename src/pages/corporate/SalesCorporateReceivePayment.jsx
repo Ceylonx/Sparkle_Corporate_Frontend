@@ -104,6 +104,16 @@ function getInvoiceGrossTotal(invoice) {
     return Number(value || 0);
 }
 
+/** Paid Invoices tab Amount: the invoice total less its Credit Notes (what was actually
+ *  collectable), e.g. 51,420.77 − CN-52 1,210.26 = 50,210.51. Uses the row's credit_notes list
+ *  (non-cancelled, full gross incl. SSCL/VAT/transport) when present, else its credit_amount. */
+function getPaidInvoiceNetAmount(invoice) {
+    const creditTotal = Array.isArray(invoice?.credit_notes) && invoice.credit_notes.length > 0
+        ? sumActiveNoteAmounts(invoice.credit_notes)
+        : toMoneyNumber(invoice?.credit_amount || 0);
+    return toMoneyNumber(Math.max(0, getInvoiceGrossTotal(invoice) - creditTotal));
+}
+
 /** Net amount actually owed on an invoice: Amount − Paid − Credit Amount, computed straight off
  *  those three columns (not the backend's own balance_due field, which can be stale or computed
  *  differently) — never negative. Debit Notes are NOT netted in here — each active one is
@@ -2025,7 +2035,7 @@ const SalesCorporateReceivePayment = () => {
                                             </div>
                                         </div>
                                         <p className="text-black/70">{(isDebit ? item.date : item.printed_at) ? new Date(isDebit ? item.date : item.printed_at).toLocaleDateString() : "-"}</p>
-                                        <p className="font-medium">Rs. {(isDebit ? getNoteGrossTotal(item) : getInvoiceGrossTotal(item)).toLocaleString(undefined, { maximumFractionDigits: 2, minimumFractionDigits: 2 })}</p>
+                                        <p className="font-medium">Rs. {(isDebit ? getNoteGrossTotal(item) : getPaidInvoiceNetAmount(item)).toLocaleString(undefined, { maximumFractionDigits: 2, minimumFractionDigits: 2 })}</p>
                                         <p className="text-black/70">{(isDebit ? item.due_date : item.invoicing_date) ? new Date(isDebit ? item.due_date : item.invoicing_date).toLocaleDateString() : "-"}</p>
                                         <p className="text-black/70">{isDebit ? (item.paid_date ? new Date(item.paid_date).toLocaleDateString() : "-") : (item.paid_date ? new Date(item.paid_date).toLocaleDateString() : "-")}</p>
                                         <div>
