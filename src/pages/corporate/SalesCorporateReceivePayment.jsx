@@ -410,6 +410,9 @@ const SalesCorporateReceivePayment = () => {
     const [payAmounts, setPayAmounts] = useState({});
     const [customerInfo, setCustomerInfo] = useState(null);
     const [customerInvoices, setCustomerInvoices] = useState([]);
+    // get-customer-payment's total_paid_this_month: sum of this customer's Approved payment
+    // receipts dated in the current month — drives the "Total Paid This Month" card.
+    const [totalPaidThisMonth, setTotalPaidThisMonth] = useState(0);
     const [allCorporateCustomers, setAllCorporateCustomers] = useState([]);
     const [showSuggestions, setShowSuggestions] = useState(false);
     const [isLoadingCustomerInvoices, setIsLoadingCustomerInvoices] = useState(false);
@@ -679,6 +682,7 @@ const SalesCorporateReceivePayment = () => {
         });
         setSelectedInvoiceIds(new Set());
         setPayAmounts({});
+        setTotalPaidThisMonth(0);
         try {
             setIsLoadingCustomerInvoices(true);
             const response = await getCustomerPayment({
@@ -688,9 +692,11 @@ const SalesCorporateReceivePayment = () => {
             setCustomerInvoices(
                 mergeOrphanDebitNotes(response?.data?.invoice_list, response?.data?.debit_note_list)
             );
+            setTotalPaidThisMonth(toMoneyNumber(response?.data?.total_paid_this_month));
         } catch (error) {
             console.error("Error fetching customer invoices:", error);
             setCustomerInvoices([]);
+            setTotalPaidThisMonth(0);
         } finally {
             setIsLoadingCustomerInvoices(false);
         }
@@ -943,11 +949,10 @@ const SalesCorporateReceivePayment = () => {
                         <div className="bg-white rounded-xl border border-primary/20 p-4">
                             <p className="text-black/50 text-sm font-medium mb-2">Total Paid This Month</p>
                             <p className="text-2xl font-bold text-green-500">
-                                {/* Sum of the "Paid" column exactly as shown in the Invoice and
-                                    Debit Note List below, invoice and Debit Note rows alike. */}
-                                Rs. {paymentLineItems
-                                    .reduce((s, item) => s + Number((item.rowType === "debit" ? item.note : item.invoice)?.paid_amount || 0), 0)
-                                    .toLocaleString(undefined, { maximumFractionDigits: 2, minimumFractionDigits: 2 })}
+                                {/* Approved payment receipts dated this calendar month, from the
+                                    backend (total_paid_this_month) — not the list's Paid column,
+                                    which is all-time and omits fully paid invoices. */}
+                                Rs. {totalPaidThisMonth.toLocaleString(undefined, { maximumFractionDigits: 2, minimumFractionDigits: 2 })}
                             </p>
                         </div>
                     </div>

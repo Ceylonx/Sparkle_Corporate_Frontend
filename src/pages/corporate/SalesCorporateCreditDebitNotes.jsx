@@ -19,7 +19,7 @@ import {
 import CorporateInvoicePreview from "./invoicing/CorporateInvoicePreview";
 import { pickCorporateTaxRatePercent, buildCollectionNoteLinesFromApiOrderItems } from "../../utils/corporateCollectionNotePricing";
 import { computeSsclVatFromBase } from "../../utils/corporateTaxInvoiceMath";
-import { getAllCorporateCustomers } from "../../services/CustomerServices";
+import { getAllCorporateCustomers, getCustomerById } from "../../services/CustomerServices";
 import { getAllCorporateSettings, getCorporatePriceListByCustomer, getAllCorporateItems } from "../../services/corporate/CorporateSettingsServices";
 
 // Same normalization CorporatePeriodInvoicePreview.jsx uses so item_type_id/corp_item_id line up
@@ -198,6 +198,30 @@ function resolveInvoicedQty(it) {
     if (it?.display_qty != null) return Number(it.display_qty);
     if (it?.available_balance != null) return Number(it.available_balance);
     return Number(it?.corp_item_quantity || 0);
+}
+
+/** Customer service types ([{ service_type: "Urgent", percentage: "10.00" }, ...]) — the source
+ *  of each delivery type's surcharge %. The invoice-preview customer often doesn't carry them,
+ *  so fall back to the full get-customer-by-id record (selectedCustomer). */
+function resolveCustomerServiceTypes(...customers) {
+    for (const c of customers) {
+        let raw = c?.service_types;
+        if (typeof raw === "string") {
+            try {
+                raw = JSON.parse(raw);
+            } catch (_) {
+                raw = null;
+            }
+        }
+        if (Array.isArray(raw) && raw.length > 0) return raw;
+    }
+    return [];
+}
+
+/** The invoice's delivery type (e.g. "Urgent") — applied to any line that doesn't carry its own,
+ *  so its service-type % is added to the unit price. */
+function resolveInvoiceDeliveryType(invoiceData) {
+    return invoiceData?.delivery_type || invoiceData?.deliveryType || invoiceData?.invoicing_type || "NORMAL";
 }
 
 function formatLogDateTime(raw) {
@@ -402,16 +426,15 @@ export default function SalesCorporateCreditDebitNotes() {
             pickup_date: it.pickup_date || invoiceData.printed_at,
         }));
 
-        let customerServiceTypes = [];
-        if (customerProfile && customerProfile.service_types) {
-            try {
-                customerServiceTypes = typeof customerProfile.service_types === 'string'
-                    ? JSON.parse(customerProfile.service_types)
-                    : customerProfile.service_types;
-            } catch (_) {
-                customerServiceTypes = [];
-            }
-        }
+        // Only borrow selectedCustomer's service types when it's this invoice's own customer.
+        const invoiceCustomerId = invoiceData?.customer_id ?? customerProfile?.customer_id;
+        const fetchedCustomer =
+            selectedCustomer && String(selectedCustomer.customer_id) === String(invoiceCustomerId)
+                ? selectedCustomer
+                : null;
+        // Delivery type's service-type % (e.g. Urgent 10%) is added onto each unit price by the
+        // builder below (resolveDeliverySurchargePercent) — so Rs 100 on an Urgent invoice → Rs 110.
+        const customerServiceTypes = resolveCustomerServiceTypes(customerProfile, fetchedCustomer);
 
         const taxType = customerProfile?.tax_type ?? invoiceData.vat_status ?? "";
         const vatNumber = customerProfile?.customer_vat_number ?? customerProfile?.vat_number ?? customerProfile?.vat_no;
@@ -420,7 +443,7 @@ export default function SalesCorporateCreditDebitNotes() {
             items: itemsWithPickup,
             customerPriceList: notePriceList,
             itemTypes: noteItemTypes,
-            deliveryTypeRaw: invoiceData.invoicing_type || "NORMAL",
+            deliveryTypeRaw: resolveInvoiceDeliveryType(invoiceData),
             customerServiceTypes,
             corporateTaxRates: taxRates,
             taxType,
@@ -451,7 +474,7 @@ export default function SalesCorporateCreditDebitNotes() {
         // Invoice Items" table groups by Delivery Order (see itemsByDeliveryOrder below) rather
         // than collapsing the same item from two delivery notes into one row.
         return enrichedRows;
-    }, [invoicePreviewData, notePriceList, noteItemTypes, previouslyReturnedQty]);
+    }, [invoicePreviewData, notePriceList, noteItemTypes, previouslyReturnedQty, selectedCustomer]);
 
     // Group the granular rows by Delivery Order (delivery_id, e.g. "CDN-24") for display in the
     // "Change Invoice Items" table. Purely a display-layer grouping — pricedLinesForCreation
@@ -640,6 +663,35 @@ export default function SalesCorporateCreditDebitNotes() {
         return undefined;
     }, [isCreating, creationMode, amount, viewingNote]);
 
+    // Bumped on every customer select so a slow get-customer-by-id response for a customer
+    // that's since been changed can't overwrite the current selection.
+    const customerDetailsRequestRef = useRef(0);
+
+    // Select a customer, then enrich it with the full record from get-customer-by-id (VAT no,
+    // assigned_taxes, address, etc.). The list row is shown immediately; the fetched fields are
+    // merged over it once they arrive, keeping the list row as the fallback if the call fails.
+    const selectCustomerWithDetails = async (customer) => {
+        const requestId = ++customerDetailsRequestRef.current;
+        setSelectedCustomer(customer || null);
+        if (!customer?.customer_id) return;
+
+        try {
+            const response = await getCustomerById({
+                user_id: localStorage.getItem("userId") || "",
+                customer_id: customer.customer_id,
+                // Corporate customers are stored with this (misspelled) type across the codebase.
+                customer_type: "Cooperate",
+            });
+            if (requestId !== customerDetailsRequestRef.current) return;
+            const apiCustomer = response?.data?.customer ?? response?.data?.data ?? null;
+            if (apiCustomer && typeof apiCustomer === "object") {
+                setSelectedCustomer({ ...customer, ...apiCustomer, customer_id: customer.customer_id });
+            }
+        } catch (err) {
+            console.error("Failed to fetch customer details, using list data instead", err);
+        }
+    };
+
     // Bumped on every invoice select/clear so a slow getInvoicePreviewDetails response for an
     // invoice that's since been cleared or replaced can't repopulate the form.
     const invoiceSelectRequestRef = useRef(0);
@@ -669,8 +721,9 @@ export default function SalesCorporateCreditDebitNotes() {
         setSelectedInvoice(inv);
         // Keep "Select Customer" in sync when an invoice is picked directly (e.g. under "All Customers")
         const matchedCustomer = corporateCustomers.find((c) => String(c.customer_id) === String(inv.customer_id));
-        if (matchedCustomer) {
-            setSelectedCustomer(matchedCustomer);
+        // Skip the refetch when it's already the selected customer (keeps its fetched details).
+        if (matchedCustomer && String(selectedCustomer?.customer_id) !== String(matchedCustomer.customer_id)) {
+            selectCustomerWithDetails(matchedCustomer);
         }
         setIsInvoicePreviewLoading(true);
         setInvoicePreviewData(null);
@@ -789,7 +842,7 @@ export default function SalesCorporateCreditDebitNotes() {
             setSelectedInvoice(null);
             setInvoicePreviewData(null);
             const matchedCustomer = corporateCustomers.find((c) => String(c.customer_id) === String(note.customer_id));
-            setSelectedCustomer(matchedCustomer || null);
+            selectCustomerWithDetails(matchedCustomer || null);
         }
 
         setViewingNote(null);
@@ -1307,16 +1360,13 @@ export default function SalesCorporateCreditDebitNotes() {
             pickup_date: it.pickup_date || invoiceData.printed_at,
         }));
 
-        let customerServiceTypes = [];
-        if (customerProfile && customerProfile.service_types) {
-            try {
-                customerServiceTypes = typeof customerProfile.service_types === 'string'
-                    ? JSON.parse(customerProfile.service_types)
-                    : customerProfile.service_types;
-            } catch (_) {
-                customerServiceTypes = [];
-            }
-        }
+        // Same service-type % source/fallback as pricedLinesForCreation.
+        const invoiceCustomerId = invoiceData?.customer_id ?? customerProfile?.customer_id;
+        const fetchedCustomer =
+            selectedCustomer && String(selectedCustomer.customer_id) === String(invoiceCustomerId)
+                ? selectedCustomer
+                : null;
+        const customerServiceTypes = resolveCustomerServiceTypes(customerProfile, fetchedCustomer);
 
         const taxType = customerProfile?.tax_type ?? invoiceData.vat_status ?? "";
         const vatNumber = customerProfile?.customer_vat_number ?? customerProfile?.vat_number ?? customerProfile?.vat_no;
@@ -1325,7 +1375,7 @@ export default function SalesCorporateCreditDebitNotes() {
             items: itemsWithPickup,
             customerPriceList: notePriceList,
             itemTypes: noteItemTypes,
-            deliveryTypeRaw: invoiceData.invoicing_type || "NORMAL",
+            deliveryTypeRaw: resolveInvoiceDeliveryType(invoiceData),
             customerServiceTypes,
             corporateTaxRates: taxRates,
             taxType,
@@ -1355,7 +1405,7 @@ export default function SalesCorporateCreditDebitNotes() {
                 pickup_sort: Number.isFinite(ms) ? ms : 0,
             };
         });
-    }, [previewData, notePriceList, noteItemTypes]);
+    }, [previewData, notePriceList, noteItemTypes, selectedCustomer]);
 
     // Close invoice / customer dropdowns when clicking outside
     useEffect(() => {
@@ -1965,7 +2015,7 @@ export default function SalesCorporateCreditDebitNotes() {
                                         <div className="overflow-y-auto max-h-48 flex flex-col gap-y-1">
                                             <div
                                                 onClick={() => {
-                                                    setSelectedCustomer(null);
+                                                    selectCustomerWithDetails(null);
                                                     setIsCustomerDropdownOpen(false);
                                                     setCustomerSearch("");
                                                     setSelectedInvoice(null);
@@ -1983,7 +2033,7 @@ export default function SalesCorporateCreditDebitNotes() {
                                                     <div
                                                         key={c.customer_id || c.customer_auto_id || idx}
                                                         onClick={() => {
-                                                            setSelectedCustomer(c);
+                                                            selectCustomerWithDetails(c);
                                                             setIsCustomerDropdownOpen(false);
                                                             setCustomerSearch("");
                                                             setSelectedInvoice(null);
