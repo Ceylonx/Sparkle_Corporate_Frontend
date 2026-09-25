@@ -225,6 +225,25 @@ function resolveInvoiceDeliveryType(invoiceData) {
     return invoiceData?.delivery_type || invoiceData?.deliveryType || invoiceData?.invoicing_type || "NORMAL";
 }
 
+/** A note's saved item-level adjustments ("Change Invoice Items"), or [] for a manual-amount note. */
+function getSavedAdjustedItems(note) {
+    const raw = note?.adjusted_items;
+    if (!raw || raw === "null") return [];
+    try {
+        const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
+        return Array.isArray(parsed) ? parsed : [];
+    } catch (_) {
+        return [];
+    }
+}
+
+/** The creation mode a saved note was made with — editing keeps it locked to this mode. */
+function getNoteCreationMode(note) {
+    return note?.type === "Credit Note" && note?.linked_invoice_id && getSavedAdjustedItems(note).length > 0
+        ? "Change Invoice Items"
+        : "Enter Amount Manually";
+}
+
 function formatLogDateTime(raw) {
     if (!raw) return "";
     const d = new Date(raw);
@@ -756,7 +775,8 @@ export default function SalesCorporateCreditDebitNotes() {
         setNoteItemTypes([]);
         setInvoiceSearch("");
         setIsInvoiceDropdownOpen(false);
-        setCreationMode("Enter Amount Manually");
+        // When editing, the mode stays locked to the one the note was created with.
+        setCreationMode(editingNote ? getNoteCreationMode(editingNote) : "Enter Amount Manually");
     };
 
     // Fetch details for adjustment table
@@ -844,11 +864,37 @@ export default function SalesCorporateCreditDebitNotes() {
                 });
                 setPreviouslyReturnedQty(returnedByLineKey);
 
-                // A fresh RETURN QTY always starts at 0 — QTY above already reflects the
-                // remaining balance, so there's no old amount to replay here.
+                // A fresh RETURN QTY starts at 0 — QTY above already reflects the remaining
+                // balance. When EDITING a note with saved item adjustments, pre-fill each line's
+                // RETURN QTY with what that note returned (its own returns are excluded from
+                // previouslyReturnedQty above, so QTY still includes them).
+                const editedNote = excludeNoteId != null
+                    ? notes.find((n) => String(n.id) === String(excludeNoteId))
+                    : null;
+                const editedReturnedByLineKey = {};
+                if (editedNote?.adjusted_items && editedNote.adjusted_items !== "null") {
+                    let savedItems = null;
+                    try {
+                        savedItems = typeof editedNote.adjusted_items === "string"
+                            ? JSON.parse(editedNote.adjusted_items)
+                            : editedNote.adjusted_items;
+                    } catch (_) {
+                        savedItems = null;
+                    }
+                    if (Array.isArray(savedItems)) {
+                        savedItems.forEach((s) => {
+                            const key = buildHistoricalMatchKey(s);
+                            if (key == null) return;
+                            const orgQty = Number(s.quantity ?? s.original_qty ?? 0);
+                            const keptQty = s.adjusted_qty !== undefined ? Number(s.adjusted_qty) : (s.adjusted_quantity !== undefined ? Number(s.adjusted_quantity) : orgQty);
+                            editedReturnedByLineKey[key] = (editedReturnedByLineKey[key] || 0) + Math.max(0, orgQty - keptQty);
+                        });
+                    }
+                }
                 items.forEach((item, idx) => {
                     const id = buildLineKey(item, idx);
-                    initialAdjusted[id] = 0;
+                    const historicalKey = buildHistoricalMatchKey(item);
+                    initialAdjusted[id] = historicalKey != null ? (editedReturnedByLineKey[historicalKey] || 0) : 0;
                 });
                 setAdjustedQuantities(initialAdjusted);
             } else {
@@ -878,7 +924,9 @@ export default function SalesCorporateCreditDebitNotes() {
     const handleEditNoteClick = (note) => {
         setEditingNote(note);
         setNoteType(note.type);
-        setCreationMode("Enter Amount Manually");
+        // Reopens in (and stays locked to) the mode it was created with — a Credit Note saved via
+        // "Change Invoice Items" gets its return quantities pre-filled in handleSelectInvoice.
+        setCreationMode(getNoteCreationMode(note));
         setAmount(note.amount !== null && note.amount !== undefined ? String(note.amount) : "");
         setTransportCharge(getNoteTransportCharge(note) > 0 ? String(getNoteTransportCharge(note)) : "");
         setDueDate(toDateInputValue(note.due_date));
@@ -2204,16 +2252,12 @@ export default function SalesCorporateCreditDebitNotes() {
                                 linkedInvoice?.invoicing_date ||
                                 linkedInvoice?.created_at
                             ) || "—";
-                            // Active (non-cancelled) Credit Notes already issued against this
-                            // invoice — netted out of its balance below so Balance reflects what's
-                            // actually still owed, same logic Receive Payment's Invoice List uses.
-                            // On a Debit Note, only APPROVED Credit Notes count — a pending
-                            // (Created/Checked) one hasn't actually reduced what the customer owes
-                            // yet. A Credit Note still counts pending ones so the same amount can't
-                            // be credited twice while the first is awaiting approval.
+                            // Only APPROVED, non-cancelled Credit Notes count (for both Credit and
+                            // Debit Note creation) — a pending (Created/Checked) one hasn't actually
+                            // reduced what the customer owes yet. Netted out of Balance below.
                             const totalCreditAmount = (invoicePreviewData?.creditNotes || [])
                                 .filter((n) => n?.status !== "Deactive")
-                                .filter((n) => noteType !== "Debit Note" || n?.approval_status === "Approved")
+                                .filter((n) => n?.approval_status === "Approved")
                                 .reduce((sum, n) => sum + getNoteDisplayAmount(n), 0);
                             const totalDebitAmount = (
                                 invoicePreviewData?.debitNotes ||
@@ -2224,9 +2268,8 @@ export default function SalesCorporateCreditDebitNotes() {
                                 )
                             )
                                 .filter((n) => n?.status !== "Deactive")
-                                // Same rule as Credit Notes above: on a Debit Note, only APPROVED
-                                // Debit Notes count toward the total.
-                                .filter((n) => noteType !== "Debit Note" || n?.approval_status === "Approved")
+                                // Same rule as Credit Notes above: only APPROVED Debit Notes count.
+                                .filter((n) => n?.approval_status === "Approved")
                                 .reduce((sum, n) => sum + getNoteDisplayAmount(n), 0);
                             // Paid comes straight off the invoice's own paid_amount column — not
                             // derived from total_amount - balance_due, which can disagree with it
@@ -2322,22 +2365,33 @@ export default function SalesCorporateCreditDebitNotes() {
                             );
                         })()}
 
-                        {/* Manual / Itemized Adjustment Switch */}
+                        {/* Manual / Itemized Adjustment Switch — when editing, locked to the mode the
+                            note was created with (the other option is disabled). */}
+                        {(() => {
+                            const lockedEditMode = editingNote ? getNoteCreationMode(editingNote) : null;
+                            const manualDisabled = lockedEditMode === "Change Invoice Items";
+                            const itemsDisabled = noteType === "Debit Note" || lockedEditMode === "Enter Amount Manually";
+                            const lockedTitle = "Locked to the option this note was created with";
+                            return (
                         <div className="flex border border-gray-200 rounded-2xl overflow-hidden shadow-sm">
                             <button
                                 type="button"
+                                disabled={manualDisabled}
                                 onClick={() => setCreationMode("Enter Amount Manually")}
-                                className={`w-1/2 py-2.5 text-base font-bold transition-all cursor-pointer ${
-                                    creationMode === "Enter Amount Manually"
-                                        ? "bg-primary text-white"
-                                        : "bg-gray-100 text-black/60 hover:bg-gray-200"
+                                title={manualDisabled ? lockedTitle : ""}
+                                className={`w-1/2 py-2.5 text-base font-bold transition-all ${
+                                    manualDisabled
+                                        ? "bg-gray-100 text-black/30 cursor-not-allowed"
+                                        : creationMode === "Enter Amount Manually"
+                                        ? "bg-primary text-white cursor-pointer"
+                                        : "bg-gray-100 text-black/60 hover:bg-gray-200 cursor-pointer"
                                 }`}
                             >
                                 Enter Amount Manually
                             </button>
                             <button
                                 type="button"
-                                disabled={noteType === "Debit Note" || !!editingNote}
+                                disabled={itemsDisabled}
                                 onClick={() => {
                                     if (!selectedInvoice) {
                                         Swal.fire({
@@ -2351,17 +2405,19 @@ export default function SalesCorporateCreditDebitNotes() {
                                     setCreationMode("Change Invoice Items");
                                 }}
                                 className={`w-1/2 py-2.5 text-base font-bold transition-all ${
-                                    noteType === "Debit Note" || editingNote
+                                    itemsDisabled
                                         ? "bg-gray-100 text-black/30 cursor-not-allowed"
                                         : creationMode === "Change Invoice Items"
                                         ? "bg-primary text-white cursor-pointer"
                                         : "bg-gray-100 text-black/60 hover:bg-gray-200 cursor-pointer"
                                 }`}
-                                title={noteType === "Debit Note" ? "Disabled for Debit Notes" : editingNote ? "Item adjustments can't be edited after creation" : ""}
+                                title={noteType === "Debit Note" ? "Disabled for Debit Notes" : itemsDisabled ? lockedTitle : ""}
                             >
                                 Change Invoice Items
                             </button>
                         </div>
+                            );
+                        })()}
 
                         {/* Mode content panel */}
                         {creationMode === "Enter Amount Manually" ? (
