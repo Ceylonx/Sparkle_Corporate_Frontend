@@ -225,6 +225,15 @@ function resolveInvoiceDeliveryType(invoiceData) {
     return invoiceData?.delivery_type || invoiceData?.deliveryType || invoiceData?.invoicing_type || "NORMAL";
 }
 
+/** RETURN QTY input → whole number within 0..maxQty ("" stays "" so the field can be cleared). */
+function clampReturnQty(rawValue, maxQty) {
+    if (rawValue === "" || rawValue === null || rawValue === undefined) return "";
+    const n = Math.floor(Number(rawValue));
+    if (!Number.isFinite(n)) return 0;
+    const max = Math.max(0, Math.floor(Number(maxQty) || 0));
+    return Math.min(Math.max(n, 0), max);
+}
+
 /** A note's saved item-level adjustments ("Change Invoice Items"), or [] for a manual-amount note. */
 function getSavedAdjustedItems(note) {
     const raw = note?.adjusted_items;
@@ -952,6 +961,38 @@ export default function SalesCorporateCreditDebitNotes() {
     };
 
 
+    /** "Change Invoice Items": every RETURN QTY must be a whole number within 0..that line's QTY,
+     *  and at least one line must actually be returned. Shows the problem and returns false. */
+    const validateReturnQuantities = () => {
+        const overLimit = pricedLinesForCreation.filter((item) => {
+            const raw = adjustedQuantities[item.lineKey];
+            const returnQty = raw === undefined || raw === "" ? 0 : Number(raw);
+            return !Number.isInteger(returnQty) || returnQty < 0 || returnQty > Number(item.current_display_qty || 0);
+        });
+        if (overLimit.length > 0) {
+            Swal.fire({
+                icon: "warning",
+                title: "Invalid Return Qty",
+                html: `Return Qty can't be more than the item's QTY:<br/><br/>${overLimit
+                    .map((item) => `${item.item_name || item.corp_item_id} (${item.delivery_id || "—"}): max ${Number(item.current_display_qty || 0)}`)
+                    .join("<br/>")}`,
+                confirmButtonColor: "#1470F9"
+            });
+            return false;
+        }
+        const anyReturned = pricedLinesForCreation.some((item) => Number(adjustedQuantities[item.lineKey] || 0) > 0);
+        if (!anyReturned) {
+            Swal.fire({
+                icon: "warning",
+                title: "Validation Error",
+                text: "Enter a Return Qty for at least one item.",
+                confirmButtonColor: "#1470F9"
+            });
+            return false;
+        }
+        return true;
+    };
+
     const handleNextStep = () => {
         // A Debit Note can be raised straight against a customer, with no invoice attached —
         // Credit Notes still require a linked invoice since they credit money already invoiced.
@@ -1007,6 +1048,8 @@ export default function SalesCorporateCreditDebitNotes() {
                 });
                 return;
             }
+        } else if (!validateReturnQuantities()) {
+            return;
         }
 
         // Initialize Step 2 states
@@ -1037,6 +1080,7 @@ export default function SalesCorporateCreditDebitNotes() {
 
     const handleCreateNote = async () => {
         if (!selectedInvoice && !(noteType === "Debit Note" && selectedCustomer)) return;
+        if (creationMode === "Change Invoice Items" && !validateReturnQuantities()) return;
 
         let hasChanges = false;
         let noteAmount = 0;
@@ -2536,25 +2580,28 @@ export default function SalesCorporateCreditDebitNotes() {
                                                                 <div className="col-span-2 text-black/60">{record.item_category_name || "—"}</div>
                                                                 <div className="col-span-1 text-center text-black/70 font-semibold">{orgQty}</div>
                                                                 <div className="col-span-2 flex justify-center">
+                                                                    {/* RETURN QTY is capped at this line's QTY (whole numbers, 0..QTY). */}
                                                                     <input
                                                                         type="number"
-                                                                        max={record.qty}
+                                                                        max={orgQty}
                                                                         min={0}
-                                                                        className="border border-gray-300 rounded-lg px-2 py-0.5 text-center w-24 focus:outline-none focus:border-primary text-sm font-semibold"
+                                                                        step={1}
+                                                                        title={`Max ${orgQty}`}
+                                                                        className={`border rounded-lg px-2 py-0.5 text-center w-24 focus:outline-none text-sm font-semibold ${
+                                                                            returnQty > orgQty
+                                                                                ? "border-red-500 text-red-600 focus:border-red-500"
+                                                                                : "border-gray-300 focus:border-primary"
+                                                                        }`}
                                                                         value={adjustedQuantities[uniqueId] ?? 0}
                                                                         placeholder="0"
+                                                                        onKeyDown={(e) => {
+                                                                            // No decimals / signs / exponents in a quantity.
+                                                                            if ([".", ",", "-", "+", "e", "E"].includes(e.key)) e.preventDefault();
+                                                                        }}
                                                                         onChange={(e) => {
-                                                                            const val = e.target.value;
-                                                                            let numVal = val === "" ? "" : Number(val);
-                                                                            if (numVal !== "" && numVal > orgQty) {
-                                                                                numVal = orgQty;
-                                                                            }
-                                                                            if (numVal !== "" && numVal < 0) {
-                                                                                numVal = 0;
-                                                                            }
                                                                             setAdjustedQuantities((prev) => ({
                                                                                 ...prev,
-                                                                                [uniqueId]: numVal
+                                                                                [uniqueId]: clampReturnQty(e.target.value, orgQty)
                                                                             }));
                                                                         }}
                                                                     />
