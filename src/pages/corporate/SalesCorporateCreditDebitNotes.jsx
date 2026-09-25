@@ -661,7 +661,10 @@ export default function SalesCorporateCreditDebitNotes() {
     };
 
     // Fetch details for adjustment table
-    const handleSelectInvoice = async (inv) => {
+    // excludeNoteId: the note being edited — its own returns mustn't count as "already returned"
+    // against itself (passed explicitly since editingNote state isn't committed yet when
+    // handleEditNoteClick calls this).
+    const handleSelectInvoice = async (inv, { excludeNoteId = editingNote?.id } = {}) => {
         const requestId = ++invoiceSelectRequestRef.current;
         setSelectedInvoice(inv);
         // Keep "Select Customer" in sync when an invoice is picked directly (e.g. under "All Customers")
@@ -712,7 +715,8 @@ export default function SalesCorporateCreditDebitNotes() {
                 // QTY/BALANCE QTY in pricedLinesForCreation above — it never touches the pricing
                 // builder's own qty input, so UNIT PRICE is unaffected.
                 const priorNotesForInvoice = notes.filter(
-                    (n) => n.linked_invoice_id === inv.invoice_id && n.status !== "Deactive" && n.adjusted_items && n.adjusted_items !== "null"
+                    (n) => n.linked_invoice_id === inv.invoice_id && n.status !== "Deactive" && n.adjusted_items && n.adjusted_items !== "null" &&
+                        (excludeNoteId == null || String(n.id) !== String(excludeNoteId))
                 );
                 const returnedByLineKey = {};
                 priorNotesForInvoice.forEach((n) => {
@@ -779,7 +783,7 @@ export default function SalesCorporateCreditDebitNotes() {
         if (note.linked_invoice_id) {
             const matchedInvoice = invoices.find((inv) => inv.invoice_id === note.linked_invoice_id) ||
                 { invoice_id: note.linked_invoice_id, customer_id: null };
-            handleSelectInvoice(matchedInvoice);
+            handleSelectInvoice(matchedInvoice, { excludeNoteId: note.id });
         } else {
             // Standalone Debit Note (no linked invoice) — just restore the customer it was raised against.
             setSelectedInvoice(null);
@@ -858,13 +862,21 @@ export default function SalesCorporateCreditDebitNotes() {
         // terms_and_conditions, which is often filled with unrelated test/custom text that
         // shouldn't leak into a new Credit/Debit Note.
         setEnterTerms(editingNote?.terms_and_conditions || resolveDefaultTerms(corporateSettings?.receipt_terms));
-        setSelectedBank("BOC");
+        // Editing keeps the note's own saved bank/discount (they're re-sent on update).
+        setSelectedBank(editingNote?.bank || "BOC");
         // The customer's invoice discount is never carried onto a Debit Note — it's an extra
         // charge on top of the invoice, not part of the discounted invoice total.
+        const savedDiscount = editingNote && editingNote.discount != null && editingNote.discount !== ""
+            ? Number(editingNote.discount)
+            : null;
         setDiscount(
-            noteType !== "Debit Note" && invoicePreviewData?.invoice?.discount
-                ? `${invoicePreviewData.invoice.discount}%`
-                : ""
+            noteType === "Debit Note"
+                ? ""
+                : savedDiscount != null
+                    ? `${savedDiscount}%`
+                    : invoicePreviewData?.invoice?.discount
+                        ? `${invoicePreviewData.invoice.discount}%`
+                        : ""
         );
         setCurrentStep(2);
     };
@@ -946,40 +958,47 @@ export default function SalesCorporateCreditDebitNotes() {
 
         const isEditMode = !!editingNote;
 
+        // Everything that determines a note's amounts/content — sent identically on create and
+        // edit, so an edited note's saved SSCL/VAT/transport are recomputed exactly like a new
+        // note's instead of keeping whatever was stored when it was first created.
+        const commonFields = {
+            type: noteType,
+            linked_invoice_id: selectedInvoice?.invoice_id || null,
+            customer_id: selectedInvoice?.customer_id || selectedCustomer?.customer_id || null,
+            amount: Math.abs(noteAmount),
+            reason: reason.trim(),
+            description: enterNote.trim(),
+            user_id: localStorage.getItem("userId") || "",
+            due_date: noteType === "Debit Note" && dueDate ? dueDate : null,
+            adjusted_items: hasChanges ? stashedItems : null,
+            adjustedItems: hasChanges ? stashedItems : null,
+            bank: selectedBank,
+            discount: finalDiscountPct,
+            ledger_account: selectedLedgerAccount,
+            terms_and_conditions: enterTerms.trim(),
+            ...buildCreateNoteChargeFields(noteAmount, transportCharge)
+        };
+
         const payload = isEditMode
             ? {
+                ...commonFields,
                 id: editingNote.id,
                 approval_status: editingNote.approval_status,
+                // Kept alongside linked_invoice_id for the existing update endpoint.
                 invoice_id: selectedInvoice?.invoice_id || null,
-                customer_id: selectedInvoice?.customer_id || selectedCustomer?.customer_id || null,
-                amount: Math.abs(noteAmount),
-                reason: reason.trim(),
-                description: enterNote.trim(),
-                terms_and_conditions: enterTerms.trim(),
-                ledger_account: selectedLedgerAccount,
-                user_id: localStorage.getItem("userId") || "",
-                due_date: noteType === "Debit Note" && dueDate ? dueDate : null,
+                // buildCreateNoteChargeFields omits transport when it's 0 — on an edit that must
+                // be sent explicitly, or clearing the Transport Charge would never reach the DB.
                 ...(toMoneyNumber(Math.abs(Number(transportCharge) || 0)) > 0
-                    ? { manual_transport_charge: toMoneyNumber(Math.abs(Number(transportCharge) || 0)) }
-                    : {})
+                    ? {}
+                    : {
+                        transport_amount: 0,
+                        transport_charge: 0,
+                        travelling_charge: 0,
+                        traveling_charge: 0,
+                        manual_transport_charge: 0,
+                    })
             }
-            : {
-                type: noteType,
-                linked_invoice_id: selectedInvoice?.invoice_id || null,
-                customer_id: selectedInvoice?.customer_id || selectedCustomer?.customer_id || null,
-                amount: Math.abs(noteAmount),
-                reason: reason.trim(),
-                description: enterNote.trim(),
-                user_id: localStorage.getItem("userId") || "",
-                due_date: noteType === "Debit Note" && dueDate ? dueDate : null,
-                adjusted_items: hasChanges ? stashedItems : null,
-                adjustedItems: hasChanges ? stashedItems : null,
-                bank: selectedBank,
-                discount: finalDiscountPct,
-                ledger_account: selectedLedgerAccount,
-                terms_and_conditions: enterTerms.trim(),
-                ...buildCreateNoteChargeFields(noteAmount, transportCharge)
-            };
+            : commonFields;
 
         try {
             setIsLoading(true);
