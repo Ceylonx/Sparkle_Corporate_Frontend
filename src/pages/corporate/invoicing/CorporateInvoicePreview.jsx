@@ -941,17 +941,21 @@ const CorporateInvoicePreview = forwardRef(function CorporateInvoicePreview(
 
     const amountInWordsDisplay = useMemo(() => {
         if (isCreditNote) {
-            // Both VAT and non-VAT Credit Notes state the tax-inclusive grand total in words —
-            // creditNoteTaxBreakdown is computed unconditionally off laundryCharges + system
-            // SSCL/VAT rates, so this is correct for either case even though only VAT-registered
-            // customers see the SSCL/VAT breakdown rows themselves.
-            return creditNoteTaxBreakdown.amountInWords;
+            // Must state the same final figure the Credit Note prints. A VAT-registered customer
+            // gets the SSCL/VAT breakdown rows, ending in "Total Amount Including VAT"
+            // (creditNoteTaxBreakdown.grandTotal). A non-VAT customer's line rates are already
+            // tax-inclusive and no breakdown is shown — the note's total is laundryCharges itself,
+            // so adding SSCL/VAT again here (as before) overstated the words (e.g. 1,216.40 printed
+            // as "One Thousand Four Hundred Seventy Two ... Sixteen Cents").
+            return isCustomerVatRegistered
+                ? creditNoteTaxBreakdown.amountInWords
+                : grandTotalToAmountInWords(laundryCharges);
         }
         if (!hasVatNo) {
             return grandTotalToAmountInWords(summary.totalBeforeSscl);
         }
         return summary.amountInWords || "";
-    }, [isCreditNote, laundryCharges, hasVatNo, summary.amountInWords, summary.totalBeforeSscl]);
+    }, [isCreditNote, isCustomerVatRegistered, creditNoteTaxBreakdown.amountInWords, laundryCharges, hasVatNo, summary.amountInWords, summary.totalBeforeSscl]);
 
 
 
