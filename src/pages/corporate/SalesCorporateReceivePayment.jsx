@@ -121,6 +121,25 @@ function computeNetBalanceDue(invoice) {
  *  separately returns debit_note_list with every active Debit Note for the customer regardless of
  *  its parent invoice's due. Any note here whose invoice isn't already in invoiceList gets folded
  *  into a minimal invoice stub so it still surfaces as its own payable row in the Invoice List. */
+/** debit_note_list's payment-state fields — the authoritative copy for a Debit Note's pending
+ *  receipt / amount due, copied onto the same note when it also appears under its invoice. */
+function pickDebitNotePaymentFields(note) {
+    const fields = [
+        "hasPendingApprovalPayment",
+        "pending_approval_payment_amount",
+        "pending_approval_payment_entries",
+        "amount_due",
+        "balance_due",
+        "paid_amount",
+        "paid_status",
+        "payment_status",
+    ];
+    return fields.reduce((acc, key) => {
+        if (note?.[key] !== undefined) acc[key] = note[key];
+        return acc;
+    }, {});
+}
+
 function mergeOrphanDebitNotes(invoiceList, debitNoteList) {
     const invoices = (invoiceList || []).map((inv) => ({ ...inv, debitNotes: [...(inv.debitNotes || [])] }));
     const knownNoteKeys = new Set(
@@ -129,7 +148,17 @@ function mergeOrphanDebitNotes(invoiceList, debitNoteList) {
 
     (debitNoteList || []).forEach((note) => {
         const noteKey = note.id ?? note.note_no;
-        if (knownNoteKeys.has(noteKey)) return;
+        if (knownNoteKeys.has(noteKey)) {
+            // Already present under its invoice — but that copy may lack the payment fields
+            // (pending-approval receipt, amount due) that debit_note_list carries, which would
+            // leave a Debit Note with a receipt awaiting approval payable again. Fill them in.
+            invoices.forEach((inv) => {
+                inv.debitNotes = inv.debitNotes.map((n) =>
+                    (n.id ?? n.note_no) === noteKey ? { ...note, ...n, ...pickDebitNotePaymentFields(note) } : n
+                );
+            });
+            return;
+        }
         knownNoteKeys.add(noteKey);
 
         const invoiceId = note.linked_invoice_id || note.stored_invoice_id || note.linked_invoice_ids?.[0];
